@@ -11,9 +11,11 @@ install_reqs = parse_requirements('requirements.txt')
 
 setuptools.setup(
     name="sberpm",
-    version="0.1.0",
-    author="Sber Process Mining Team",
-    description="Library for Process Mining",
+    version="1.0.1",
+    author="Sber Process Mining R&D Team",
+    author_email='Smetanev.d.m@sberbank.ru',
+    description="Python Library for Process Mining",
+    url="https://github.com/SberProcessMining/Sber_Process_Mining",
     packages=['sberpm',
               'sberpm.autoinsights',
               'sberpm.bpmn', 'sberpm.bpmn._bpmn_graph_to_file',
