@@ -1,0 +1,8 @@
+include .gitignore
+include LICENSE
+include requirements.txt
+include tutorial.ipynb
+
+global-exclude *~
+global-exclude *.pyc
+global-exclude .svn

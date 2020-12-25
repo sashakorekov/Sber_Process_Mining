@@ -16,6 +16,7 @@ setuptools.setup(
     author_email='Smetanev.d.m@sberbank.ru',
     description="Python Library for Process Mining",
     url="https://github.com/SberProcessMining/Sber_Process_Mining",
+    include_package_data=True,
     packages=['sberpm',
               'sberpm.autoinsights',
               'sberpm.bpmn', 'sberpm.bpmn._bpmn_graph_to_file',
