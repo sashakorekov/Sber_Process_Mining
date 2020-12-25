@@ -17,6 +17,11 @@ SberPM python library is being developed by Sber Process Mining Team.
 *******
 # Installation
 
+### Installation via pip
+```bash 
+pip install sberpm
+```
+
 ### Installation from sources
 ```bash 
 git clone https://github.com/SberProcessMining/Sber_Process_Mining.git
