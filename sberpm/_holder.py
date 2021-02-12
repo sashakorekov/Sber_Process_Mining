@@ -72,7 +72,7 @@ class DataHolder:
             Consult this for time_format syntax:
             https://docs.python.org/3/library/datetime.html#strftime-and-strptime-format-codes
 
-        time_errors: {'raise', 'coerse', 'auto_convert'}
+        time_errors: {'raise', 'coerce', 'auto_convert'}
             Used only if time_format is not None. Specifies what action to take
             if conversion using time_format has errors (some of the samples
             do not correspont to it).
@@ -237,7 +237,7 @@ class DataHolder:
             Consult this for time_format syntax:
             https://docs.python.org/3/library/datetime.html#strftime-and-strptime-format-codes
 
-        time_errors: {'raise', 'coerse', 'auto_convert'}
+        time_errors: {'raise', 'coerce', 'auto_convert'}
             Used only if time_format is not None. Specifies what action to take
             if conversion using time_format has errors (some of the samples
             do not correspont to it).
@@ -288,52 +288,56 @@ class DataHolder:
             if time_column is not None and not pd_types_utils.is_datetime64_any_dtype(time_column):
                 if time_format is not None:
                     if time_errors == 'raise':
-                        df[time_column] = pd.to_datetime(df[time_column], format=time_format, errors='raise')
+                        df[time_column] = pd.to_datetime(df[time_column], format=time_format, errors='raise', utc=True)
                     elif time_errors == 'coerce':
-                        df[time_column] = pd.to_datetime(df[time_column], format=time_format, errors='coerce')
+                        df[time_column] = pd.to_datetime(df[time_column], format=time_format, errors='coerce', utc=True)
                     elif time_errors == 'auto_convert':
-                        if dayfirst is None:
-                            warnings.warn('DataHolder: timestamp auto conversion will be done. "dayfirst" argument '
-                                          'is not set, in ambiguous cases it will be used as False.', UserWarning)
-                            dayfirst = False
-                        if yearfirst is None:
-                            warnings.warn('DataHolder: timestamp auto conversion will be done, "yearfirst" argument '
-                                          'is not set, in ambiguous cases it will be used as False.', UserWarning)
-                            yearfirst = False
-                        result = pd.to_datetime(df[time_column], format=time_format, errors='coerce')
+                        dayfirst, yearfirst = DataHolder._check_dayfirst_yearfirst(dayfirst, yearfirst)
+                        result = pd.to_datetime(df[time_column], format=time_format, errors='coerce', utc=True)
                         na_mask = result.isna()
                         non_converted_timestamps = df[time_column][na_mask]
                         res = pd \
-                            .to_datetime(non_converted_timestamps, dayfirst=dayfirst, yearfirst=yearfirst)
+                            .to_datetime(non_converted_timestamps, dayfirst=dayfirst, yearfirst=yearfirst, utc=True)
                         df[time_column] = result
                         df.loc[na_mask, time_column] = res
                     else:
                         raise ValueError("time_errors must be in "
                                          f"['raise', 'coerce', 'auto_convert'], but got '{time_errors}' instead")
                 else:
-                    warnings.warn("DataHolder: 'time_format' argument is not set, "
+                    warnings.warn("DataHolder: 'time_format' is not set, "
                                   "recommended to specify it for correct time conversion, "
                                   "e.g., time_format='%d-%m-%Y %H:%M:%S'")
-                    if dayfirst is None:
-                        warnings.warn("DataHolder: timestamp auto conversion will be done. 'dayfirst' argument "
-                                      'is not set, in ambiguous cases it will be used as False.', UserWarning)
-                        dayfirst = False
-                    if yearfirst is None:
-                        warnings.warn("DataHolder: timestamp auto conversion will be done, 'yearfirst' argument "
-                                      'is not set, in ambiguous cases it will be used as False.', UserWarning)
-                        yearfirst = False
-                    df[time_column] = pd.to_datetime(df[time_column], dayfirst=dayfirst, yearfirst=yearfirst)
+                    dayfirst, yearfirst = DataHolder._check_dayfirst_yearfirst(dayfirst, yearfirst)
+                    df[time_column] = pd.to_datetime(df[time_column], dayfirst=dayfirst, yearfirst=yearfirst, utc=True)
 
         # Sort
         if self.start_timestamp_column is None and self.end_timestamp_column is None:
             df = df.sort_values(self.id_column)
             warnings.warn('DataHolder: time column is not given, cannot sort the activities.', UserWarning)
+        elif self.start_timestamp_column is not None and self.end_timestamp_column is not None:
+            df = df.sort_values([self.id_column, self.start_timestamp_column, self.end_timestamp_column])
         else:
             df = df.sort_values([self.id_column,
-                                 self.start_timestamp_column if self.start_timestamp_column is not None else self.end_timestamp_column])
+                                 self.start_timestamp_column if self.start_timestamp_column is not None
+                                 else self.end_timestamp_column])
 
         df = df.reset_index(drop=True)
         return df
+
+    @staticmethod
+    def _check_dayfirst_yearfirst(dayfirst, yearfirst):
+        if dayfirst is None:
+            DataHolder._warn_not_set('dayfirst')
+            dayfirst = False
+        if yearfirst is None:
+            DataHolder._warn_not_set('yearfirst')
+            yearfirst = False
+        return dayfirst, yearfirst
+
+    @staticmethod
+    def _warn_not_set(argument):
+        warnings.warn(f"DataHolder: timestamp auto conversion will be done. '{argument}' "
+                      "is not set, in ambiguous cases it will be considered as False.", UserWarning)
 
     def get_grouped_data(self, *columns):
         """
