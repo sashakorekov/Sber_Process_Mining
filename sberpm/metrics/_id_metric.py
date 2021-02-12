@@ -18,9 +18,6 @@ class IdMetric(BaseMetric):
     time_unit : {'s'/'second', 'm'/'minute', 'h'/'hour', 'd'/'day', 'w'/'week'}, default='day'
         Calculate time in needed format.
 
-    cycle_length : int (default = None)
-        Parameter for CycleMetric. If cycle_length is None CycleMetric find cycles of all lengths else of needed length.
-
     Attributes
     ----------
     _data_holder : DataHolder
@@ -66,7 +63,7 @@ class IdMetric(BaseMetric):
             self.metrics['trace_length'] = self.metrics['trace'].apply(len)
             self.metrics['unique_activities_num'] = self.metrics['trace'].apply(lambda x: len(set(x)))
             self.metrics['cycle_percent'] = \
-                ((1 - self.metrics['unique_activities_num'] / self.metrics['trace_length']) * 100).map('{:,.2f}'.format)
+                (1 - self.metrics['unique_activities_num'] / self.metrics['trace_length']) * 100
             if self._user_column:
                 self.metrics['unique_users_num'] = self.nunique_users().values
 
@@ -78,8 +75,7 @@ class IdMetric(BaseMetric):
         """
         Calculate length of id
         """
-        return self._group_data.agg({self._data_holder.activity_column: tuple})[
-            self._data_holder.activity_column].apply(len).reset_index(drop=True)
+        return self._group_data[self._data_holder.activity_column].count()
 
     def nunique_users(self):
         """
@@ -91,5 +87,4 @@ class IdMetric(BaseMetric):
         """
         Calculate number of unique activities in id
         """
-        return self._group_data.agg({self._data_holder.activity_column: tuple})[
-            self._data_holder.activity_column].apply(lambda x: len(set(x))).reset_index(drop=True)
+        return self._group_data[self._data_holder.activity_column].nunique()

@@ -219,7 +219,7 @@ class AutoInsights:
         """
         Adds two informational nodes to the graph.
         """
-        if mode is not 'overall':
+        if mode != 'overall':
             return
 
         good_edges = [mean_time for mean_time, ins in zip(stats['mean_time'], self._edge_insights['insights']) if
