@@ -1,7 +1,7 @@
 include .gitignore
 include LICENSE
 include requirements.txt
-include tutorial.ipynb
+include tutorials/*
 
 global-exclude *~
 global-exclude *.pyc
