@@ -6,7 +6,11 @@ scipy>=1.4.1
 # Graphs + vizualisation
 pydotplus>=2.0.2
 graphviz>=0.13.2
+IPython
 plotly
+# needed for plotly:
+nbformat>=4.2.0
+
 
 # ML
 scikit-learn>=0.23.2

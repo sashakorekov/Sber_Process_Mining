@@ -6,9 +6,15 @@
 #   Licence: MIT License
 #   Link: https://github.com/xflr6/graphviz
 
+# IPython Python module is used in this file.
+#   Licence: BSD 3-Clause License
+#   Link: https://github.com/ipython/ipython/blob/master/LICENSE
+
 from graphviz import Digraph
+from IPython.display import HTML
 
 from ._types import NodeType
+from ..miners._inductive_miner import ProcessTreeNode, ProcessTreeNodeType
 import numpy as np
 
 
@@ -145,20 +151,27 @@ class GraphvizPainter:
 
         Parameters
         ----------
-        graph : Graph
+        graph : Graph or ProcessTreeNode
             Graph object.
 
         node_style_metric: str
             Name of the node's metric that will influence the colour of the nodes.
             If None or given metric in not contained in the given graph, nodes will have the same colour.
+            Is not used if graph is a ProcessTreeNode object.
 
         edge_style_metric: str
             Name of the edge's metric that will influence the thickness of the edges.
             If None or given metric in not contained in the given graph, edges will have the same width.
+            Is not used if graph is a ProcessTreeNode object.
 
         hide_disconnected_nodes: bool, default=True
             If True, nodes without any input and output edges will not be displayed.
+            Is not used if graph is a ProcessTreeNode object.
         """
+        if isinstance(graph, ProcessTreeNode):
+            self._apply_process_tree(graph)
+            return
+
         self._digraph = Digraph()
 
         node_color_dict = GraphvizPainter._calc_nodes_colors_by_metric(graph, node_style_metric)
@@ -211,6 +224,65 @@ class GraphvizPainter:
                                color=edge.color,
                                penwidth=penwidth)
 
+    def _apply_process_tree(self, root_node):
+        """
+        Graphviz visualizer for ProcessTreeNode class.
+
+        Parameters
+        ----------
+        root_node: ProcessTreeNode
+        """
+        digraph = Digraph()
+
+        # Add nodes
+        label_dict = {
+            ProcessTreeNodeType.EXCLUSIVE_CHOICE: 'X',
+            ProcessTreeNodeType.SEQUENTIAL: '->',
+            ProcessTreeNodeType.PARALLEL: '||',
+            ProcessTreeNodeType.LOOP: '*',
+            ProcessTreeNodeType.FLOWER: '?',
+        }
+        node2gvnode = dict()
+        GraphvizPainter._add_process_tree_nodes(digraph, root_node, label_dict, node2gvnode)
+
+        # Add edges
+        GraphvizPainter._add_process_tree_edges(digraph, root_node, node2gvnode)
+
+        self._digraph = digraph
+
+    @staticmethod
+    def _add_process_tree_nodes(digraph: Digraph, node, label_dict, node2gvnode):
+
+        if node.type == ProcessTreeNodeType.SINGLE_ACTIVITY:
+            if node.label is not None:
+                node_id = node.label
+                label = node.label
+                shape = 'box'
+                color = 'white'
+            else:
+                node_id = node.type + '_' + str(len(node2gvnode))
+                label = ''
+                shape = 'box'
+                color = 'black'
+        else:
+            node_id = node.type + '_' + str(len(node2gvnode))
+            label = label_dict[node.type]
+            shape = 'circle'
+            color = 'white'
+        node2gvnode[node] = node_id
+        digraph.node(node_id, label, shape=shape, fillcolor=color, style='filled')
+        for n in node.children:
+            GraphvizPainter._add_process_tree_nodes(digraph, n, label_dict, node2gvnode)
+
+    @staticmethod
+    def _add_process_tree_edges(digraph: Digraph, node, node2gvnode):
+        n1 = node2gvnode[node]
+        for node2 in node.children:
+            n2 = node2gvnode[node2]
+            digraph.edge(n1, n2)
+        for node2 in node.children:
+            GraphvizPainter._add_process_tree_edges(digraph, node2, node2gvnode)
+
     def _add_node_in_digraph(self, gv_node):
         """
         Adds a GvNode to the graph.
@@ -248,14 +320,14 @@ class GraphvizPainter:
 
     def show(self):
         """
-        Shows graph visualization in Jupyter Notebook.
+        Shows visualization of the graph in Jupyter Notebook.
 
         Returns
         -------
-        digraph : Digraph
-            A graphviz's Digraph object.
+        digraph : IPython.core.display.HTML
+            Graph in HTML format.
         """
-        return self._digraph
+        return HTML(self._digraph._repr_svg_())
 
     @staticmethod
     def _add_metrics_to_node_label(label, metrics):
