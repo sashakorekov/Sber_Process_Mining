@@ -142,14 +142,20 @@ class ProcessTreeNode:
         """
         if self.type is None:
             raise ValueError('Not all the nodes of a process tree have a type determined.')
-        if self.type in [ProcessTreeNodeType.SEQUENTIAL, ProcessTreeNodeType.EXCLUSIVE_CHOICE]:
-            new_children = []
-            for ch in self.children:
-                if ch.type == self.type:
-                    new_children += ch.children
-                else:
-                    new_children.append(ch)
-            self.children = new_children
+        if self.type in [ProcessTreeNodeType.SEQUENTIAL, ProcessTreeNodeType.EXCLUSIVE_CHOICE,
+                         ProcessTreeNodeType.PARALLEL]:
+            again = True
+            while again:
+                again = False
+                new_children = []
+                for ch in self.children:
+                    if ch.type == self.type:
+                        new_children += ch.children
+                        again = True
+                        print(1)
+                    else:
+                        new_children.append(ch)
+                self.children = new_children
         for ch in self.children:
             ch.unite_operators()
 
