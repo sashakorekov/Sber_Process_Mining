@@ -84,7 +84,7 @@ class GraphClustering:
         if self._method == 'kmeans':
             scores = []
             for k in range(min_cluster_num, max_cluster_num + 1):
-                kmeans = KMeans(n_clusters=k, n_jobs=-1, random_state=random_state).fit(embeddings)
+                kmeans = KMeans(n_clusters=k, random_state=random_state).fit(embeddings)
                 scores.append(kmeans.inertia_)
                 models[k - min_cluster_num] = kmeans
 

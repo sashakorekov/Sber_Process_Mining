@@ -71,7 +71,7 @@ class ActivityMetric(BaseMetric):
             self.metrics["unique_ids_num"] = self.metrics['unique_ids'].apply(len)
             dict_cycle = self.cycle()
             temp = self.metrics.apply(lambda x: dict_cycle[x[self._group_column]], axis=1)
-            self.metrics['cycle_percent'] = (temp / self.metrics['total_count'] * 100).map('{:,.2f}'.format)
+            self.metrics['cycle_percent'] = temp / self.metrics['total_count'] * 100
             if self._user_column:
                 self.metrics['unique_users_num'] = self.nunique_users().values
             self._calculate_time_metrics(self.metrics, self._group_data, std)

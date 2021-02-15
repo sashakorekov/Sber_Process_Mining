@@ -78,7 +78,7 @@ class TraceMetric(BaseMetric):
             self.metrics['trace_length'] = self.metrics['trace'].apply(len)
             self.metrics['unique_activities_num'] = self.metrics['trace'].apply(lambda x: len(set(x)))
             self.metrics['cycle_percent'] = \
-                ((1 - self.metrics['unique_activities_num'] / self.metrics['trace_length']) * 100).map('{:,.2f}'.format)
+                (1 - self.metrics['unique_activities_num'] / self.metrics['trace_length']) * 100
 
             if self._user_column:
                 users = self._group_data[self._data_holder.user_column].apply(lambda x: set().union(*x))
@@ -88,23 +88,8 @@ class TraceMetric(BaseMetric):
 
         return self.metrics.sort_values('total_count', ascending=False).reset_index(drop=True)
 
-    def len(self):
+    def total_count(self):
         """
-        Calculate length of trace
+        Calculate number of occurrences of a trace.
         """
-        temp = self._group_data.agg({self._data_holder.id_column: tuple}).reset_index()
-        return temp[self._data_holder.activity_column].apply(len)
-
-    def nunique_users(self):
-        """
-        Calculate number of unique users in id
-        """
-        users = self._group_data[self._data_holder.user_column].apply(lambda x: set().union(*x))
-        return users.apply(lambda x: len(set(x))).reset_index(drop=True)
-
-    def unique_activities(self):
-        """
-        Calculate number of unique activities in id
-        """
-        temp = self._group_data.agg({self._data_holder.id_column: tuple}).reset_index()
-        return temp[self._data_holder.activity_column].apply(lambda x: len(set(x))).reset_index(drop=True)
+        return self._group_data[self._data_holder.id_column].count().sort_values(ascending=False)

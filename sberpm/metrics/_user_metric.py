@@ -62,13 +62,14 @@ class UserMetric(BaseMetric):
         std_duration: std of time duration of grouped objects
         """
         if self.metrics is None:
-            self.metrics = self.unique_activities() \
+            self.metrics = pd.DataFrame(self.unique_activities()) \
                 .rename(columns={self._data_holder.activity_column: 'unique_activities'})
             self.metrics['unique_activities_num'] = self.metrics['unique_activities'].apply(len)
-            self.metrics["activities_count"] = self.count_activities()[self._data_holder.activity_column].values
-            self.metrics['unique_ids_num'] = self.nunique_id()[self._data_holder.id_column].values
-            self.metrics['workload_in_percent'] = self.workload_in_percent().map('{:,.2f}'.format)
+            self.metrics["activities_count"] = self.count_activities()
+            self.metrics['unique_ids_num'] = self.nunique_ids()
+            self.metrics['workload_in_percent'] = self.workload_in_percent()
             self._calculate_time_metrics(self.metrics, self._group_data, std)
+            self.metrics = self.metrics.reset_index()
         return self.metrics
 
     def workload_in_percent(self):
@@ -82,15 +83,31 @@ class UserMetric(BaseMetric):
         """
         transitions_count = self._data_holder.data.groupby(
             by=self._data_holder.user_column)[self._data_holder.activity_column].count()
-        return (transitions_count / transitions_count.sum() * 100).reset_index(drop=True)
+        return transitions_count / transitions_count.sum() * 100
 
     def count_activities(self):
-        return self._group_data.agg({self._data_holder.activity_column: 'count'}).reset_index(drop=True)
+        """
+        Total number of activities each user worked on.
+
+        Returns
+        -------
+        result: pd.Series
+            Key: user, value: the metric's value.
+        """
+        return self._group_data.agg({self._data_holder.activity_column: 'count'})[self._data_holder.activity_column]
 
     def unique_activities(self):
-        return self._group_data.agg({self._data_holder.activity_column: set}).reset_index()
+        """
+        Unique activities each user worked on.
 
-    def nunique_activity(self):
+        Returns
+        -------
+        result: pd.Series
+            Key: user, value: the metric's value.
+        """
+        return self._group_data.agg({self._data_holder.activity_column: set})[self._data_holder.activity_column]
+
+    def nunique_activities(self):
         """
         Productivity of each user. The number of unique activities each user worked on.
 
@@ -99,15 +116,15 @@ class UserMetric(BaseMetric):
         result: pd.Series
             Key: user, value: the metric's value.
         """
-        return self._group_data.agg({self._data_holder.activity_column: 'nunique'}).reset_index(drop=True)
+        return self._group_data.agg({self._data_holder.activity_column: 'nunique'})[self._data_holder.activity_column]
 
-    def nunique_id(self):
+    def nunique_ids(self):
         """
-        Productivity of each user. The number of unique event traces each user worked on.
+        The number of unique event traces each user worked on.
 
         Returns
         -------
         result: pd.Series
             Key: user, value: the metric's value.
         """
-        return self._group_data.agg({self._data_holder.id_column: 'nunique'}).reset_index(drop=True)
+        return self._group_data.agg({self._data_holder.id_column: 'nunique'})[self._data_holder.id_column]

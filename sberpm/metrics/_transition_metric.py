@@ -64,12 +64,12 @@ class TransitionMetric(BaseMetric):
         _edge_data.loc[:, data_holder.activity_column] = tuple(start_activity_col + "-->" + end_activity_col)
         id_mask = start_id_col != end_id_col
         _edge_data.drop(_edge_data[id_mask].index, axis=0, inplace=True)
-
+        self._edge_data = _edge_data
         self._unique_edges = _edge_data[self._group_column].unique()
         self._group_data = _edge_data.groupby(self._group_column)
 
     def apply(self, std=False):
-        """        
+        """
         Calculate all metrics:
         total_count: frequency of edge
         total_duration: total time duration of grouped objects
@@ -81,14 +81,13 @@ class TransitionMetric(BaseMetric):
         std_duration: std of time duration of grouped objects
         """
         if self.metrics is None:
-            self.metrics = pd.DataFrame()
-            self.metrics[self._group_column] = self._unique_edges
+            self.metrics = self._group_data.agg({self._data_holder.id_column: set}).reset_index() \
+                .rename(columns={self._data_holder.activity_column: 'transitions',
+                                 self._data_holder.id_column: 'unique_ids'})
             self.metrics['total_count'] = self._group_data[self._group_column].count().values
             self._calculate_time_metrics(self.metrics, self._group_data, std)
-            self.metrics[self._data_holder.activity_column] = self.metrics[self._data_holder.activity_column].apply(
-                lambda x: self._split_tuple(x))
-        return self.metrics.rename(columns={self._data_holder.activity_column: 'transition'}) \
-            .sort_values('total_count', ascending=False).reset_index(drop=True)
+            self.metrics['transitions'] = self.metrics['transitions'].apply(lambda x: self._split_tuple(x))
+        return self.metrics.sort_values('total_count', ascending=False).reset_index(drop=True)
 
     def calculate_time_metrics(self, std=False):
         """
@@ -108,7 +107,9 @@ class TransitionMetric(BaseMetric):
         return res
 
     def nunique_users(self):
-        return self._group_data[self._user_column].nunique()
+        res = self._group_data[self._user_column].nunique()
+        res.index = [self._split_tuple(x) for x in res.index]
+        return res
 
     def sum_time(self):
         res = super().sum_time()
@@ -144,4 +145,3 @@ class TransitionMetric(BaseMetric):
 
     def cycle(self):
         return self._cycle_metric.find()[1]
-
