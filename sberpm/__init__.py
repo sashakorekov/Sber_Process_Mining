@@ -9,6 +9,7 @@ from . import miners
 from . import ml
 from . import visual
 from ._holder import DataHolder
+from ._version import __version__
 
 warnings.simplefilter(action='default', category=FutureWarning)
 
@@ -19,5 +20,6 @@ __all__ = [
     'miners',
     'ml',
     'visual',
-    'DataHolder'
+    'DataHolder',
+    '__version__'
 ]

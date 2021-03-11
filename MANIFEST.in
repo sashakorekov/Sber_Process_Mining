@@ -1,8 +1,6 @@
 include .gitignore
 include LICENSE
 include requirements.txt
-include tutorials/*
-
 global-exclude *~
 global-exclude *.pyc
 global-exclude .svn
