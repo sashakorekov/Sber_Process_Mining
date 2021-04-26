@@ -12,14 +12,19 @@
 
 import numpy as np
 import pandas as pd
+import itertools
 import plotly.graph_objs as go
 import plotly.express as px
+import plotly.figure_factory as ff
 import plotly.io as pio
 from .._holder import DataHolder
 from ..metrics import ActivityMetric, TransitionMetric, IdMetric, TraceMetric, UserMetric
+from copy import deepcopy
+from math import ceil
+from typing import Union, Optional, List, Tuple, NoReturn, Any
 
 
-def get_continuous_color(colorscale, intermed):
+def get_continuous_color(colorscale: List[list], intermed: float):
     if intermed <= 0 or len(colorscale) == 1:
         return colorscale[0][1]
     if intermed >= 1:
@@ -56,6 +61,9 @@ class ChartPainter:
         continuous (sequential, diverging or cylclical) color scale
         from 'plotly.express.colors' submodules.
 
+    shape_color: str, default='lime'
+        Name of the color to use to draw new shapes in the figure.
+
     Examples
     --------
     >>> from sberpm.visual import ChartPainter
@@ -66,16 +74,19 @@ class ChartPainter:
     >>>             sort='total_duration', n=50)
     """
 
-    def __init__(self,
-                 data,
-                 template='plotly',
-                 palette='sequential.Sunset_r'):
+    def __init__(self, data: Union[pd.DataFrame, DataHolder, ActivityMetric, TransitionMetric, IdMetric,
+                                   TraceMetric, UserMetric],
+                 template: str = 'plotly',
+                 palette: str = 'sequential.Sunset_r',
+                 shape_color: str = 'lime') -> None:
+        self._dh = None
         if type(data) is DataHolder:
             self._data = data.data
+            self._dh = data
         elif type(data) == pd.DataFrame:
             self._data = data
         elif type(data) in [ActivityMetric, TransitionMetric, IdMetric, TraceMetric, UserMetric]:
-            self._data = data.apply()
+            self._data = data
         else:
             raise TypeError
         pio.templates.default = template
@@ -83,9 +94,35 @@ class ChartPainter:
         px.defaults.color_continuous_scale = eval('px.colors.' + palette)
         self._colors, _ = px.colors.convert_colors_to_same_type(eval('px.colors.' + palette))
         self._colorscale = px.colors.make_colorscale(self._colors)
+        self._newshape_line_color = shape_color
 
-    def hist(self, x, color=None, subplots=None, barmode='stack', nbins=50, cumulative=False, orientation='v',
-             opacity=0.8, edge=False, title='auto', slider=False, **kwargs):
+        self._config = dict(toImageButtonOptions=dict(format='png',
+                                                      height=None,
+                                                      width=None,
+                                                      scale=3),
+                            modeBarButtonsToAdd=['drawline',
+                                                 'drawopenpath',
+                                                 'drawclosedpath',
+                                                 'drawcircle',
+                                                 'drawrect',
+                                                 'eraseshape'],
+                            showLink=True)
+
+    def hist(self, x: Union[str, List[str]],
+             color: Optional[str] = None,
+             subplots: Optional[Tuple[str, str, int]] = None,
+             barmode: str = 'stack',
+             nbins: int = 50,
+             cumulative: bool = False,
+             orientation: str = 'v',
+             opacity: float = 0.8,
+             edge: bool = False,
+             title: str = 'auto',
+             slider: bool = False,
+             height: Optional[int] = None,
+             width: Optional[int] = None,
+             font_size: int = 12,
+             **kwargs: Optional[Any]) -> NoReturn:
         """
         Plots a histogram.
 
@@ -135,14 +172,21 @@ class ChartPainter:
         slider: bool, default=False
             Whether to add a range slider to the plot.
 
+        height: int, default=None
+            Height of the figure in pixels.
+
+        width: int, default=None
+            Width of the figure in pixels.
+
+        font_size: int, default=12
+            Size of the global font.
+
         **kwargs: optional
             See 'plotly.express.histogram' for other possible arguments.
-
-        Returns
-        -------
-        plotly.graph_objects.Figure
         """
-        data = self._data
+        cols_or_lists = [el for el in [x, color, list(subplots[:2]) if subplots is not None else []] if el is not None]
+        data = self._get_data(list(itertools.chain(*[[el] if isinstance(el, str) else el for el in cols_or_lists])))
+        # data = self._data
         if barmode == 'stack':
             barmode = 'relative'
         if orientation == 'v':
@@ -173,9 +217,11 @@ class ChartPainter:
                            cumulative=cumulative,
                            opacity=opacity,
                            orientation=orientation,
+                           height=height,
+                           width=width,
                            **kwargs)
-        if edge is True:
-            fig.update_traces(marker=dict(line=dict(color='black', width=1)))
+        if edge:
+            fig.update_traces(marker_line=dict(color='black', width=1))
         if title == 'auto':
             if type(x) != list:
                 title = f'Histogram of {x}'
@@ -183,19 +229,39 @@ class ChartPainter:
                 title = 'Histogram'
         if type(x) == list:
             legend = dict(orientation='h', x=0.5, xanchor='center', y=1.01, yanchor='bottom', title=None)
-            margin = dict(l=0, r=0, t=80, b=0)
+            margin = dict(l=5, r=5, t=80, b=5)
         else:
             legend = {}
-            margin = dict(l=0, r=0, t=50, b=0)
+            margin = dict(l=5, r=5, t=50, b=5)
         fig.update_layout(title=dict(text=title, x=0.5, xref='paper'),
                           legend=legend,
-                          margin=margin)
-        if slider is True:
+                          margin=margin,
+                          font_size=font_size,
+                          newshape_line_color=self._newshape_line_color)
+        if slider:
             fig.update_xaxes(rangeslider_visible=True)
-        fig.show()
+        fig.show(config=self._config)
 
-    def bar(self, x=None, y=None, sort=None, n=None, color=None, subplots=None, barmode='stack', agg=None,
-            add_line=None, text=False, orientation='auto', opacity=1, edge=False, title='auto', slider=False, **kwargs):
+    def bar(self, x: Optional[Union[str, List[str]]] = None,
+            y: Optional[Union[str, List[str]]] = None,
+            sort: Optional[str] = None,
+            n: Optional[int] = None,
+            color: Optional[str] = None,
+            subplots: Optional[Tuple[str, str, int]] = None,
+            barmode: str = 'stack',
+            agg: str = None,
+            add_line: Optional[List[str]] = None,
+            text: bool = False,
+            decimals: int = 2,
+            orientation: str = 'auto',
+            opacity: float = 1.0,
+            edge: bool = False,
+            title: str = 'auto',
+            slider: bool = False,
+            height: Optional[int] = None,
+            width: Optional[int] = None,
+            font_size: int = 12,
+            **kwargs: Optional[Any]) -> NoReturn:
         """
         Makes a bar chart.
 
@@ -247,12 +313,15 @@ class ChartPainter:
         text: bool, default=False
             Whether to show text labels in the figure.
 
+        decimals: int, default=2
+            Number of decimal places to round 'text' labels of a float dtype to.
+
         orientation: {'auto', 'v', 'h'}, default='auto'
             Orientation of the graph: 'v' for vertical and 'h' for horizontal.
             By default, it is determined automatically based on the input
             data types.
 
-        opacity: float, default=1
+        opacity: float, default=1.0
             Opacity of the bars. Ranges from 0 to 1.
 
         edge: bool, default=False
@@ -264,16 +333,24 @@ class ChartPainter:
         slider: bool, default=False
             Whether to add a range slider to the plot.
 
+        height: int, default=None
+            Height of the figure in pixels.
+
+        width: int, default=None
+            Width of the figure in pixels.
+
+        font_size: int, default=12
+            Size of the global font.
+
         **kwargs: optional
             See 'plotly.express.bar' for other possible arguments.
-
-        Returns
-        -------
-        plotly.graph_objects.Figure
         """
         if x is None and y is None:
             raise ValueError("Either 'x' or 'y' must be given")
-        data = self._data
+
+        cols_or_lists = [x, y, sort, color, list(subplots[:2]) if subplots is not None else [], add_line]
+        cols_or_lists = [el for el in cols_or_lists if el is not None]
+        data = self._get_data(list(itertools.chain(*[[el] if isinstance(el, str) else el for el in cols_or_lists])))
         if sort:
             if n > 0:
                 data = data.sort_values(by=sort, ascending=False).head(n)
@@ -284,29 +361,29 @@ class ChartPainter:
                 continuous, categorical = y, x
                 autorange = True
                 if pd.api.types.is_integer_dtype(data[y]):
-                    texttemplate = '%{y:.f}'
+                    texttemplate = '%{y:d}'
                 else:
-                    texttemplate = '%{y:.2f}'
+                    texttemplate = f'%{{y:.{decimals}f}}'
             else:
                 continuous, categorical = x, y
                 autorange = 'reversed'
                 if pd.api.types.is_integer_dtype(data[x]):
-                    texttemplate = '%{x:.f}'
+                    texttemplate = '%{x:d}'
                 else:
-                    texttemplate = '%{x:.2f}'
+                    texttemplate = f'%{{x:.{decimals}f}}'
         else:
             continuous, categorical = None, None
             if y and type(y) == list and pd.api.types.is_numeric_dtype(data[y[0]]):
                 if pd.api.types.is_integer_dtype(data[y]):
-                    texttemplate = '%{y:.f}'
+                    texttemplate = '%{y:d}'
                 else:
-                    texttemplate = '%{y:.2f}'
+                    texttemplate = f'%{{y:.{decimals}f}}'
                 autorange = True
             else:
                 if pd.api.types.is_integer_dtype(data[x]):
-                    texttemplate = '%{x:.f}'
+                    texttemplate = '%{x:d}'
                 else:
-                    texttemplate = '%{x:.2f}'
+                    texttemplate = f'%{{x:.{decimals}f}}'
                 autorange = 'reversed'
         if barmode == 'stack':
             barmode = 'relative'
@@ -348,6 +425,8 @@ class ChartPainter:
                                opacity=opacity,
                                histfunc=agg,
                                orientation=orientation,
+                               height=height,
+                               width=width,
                                **kwargs)
             fig.update_layout(bargap=0.2)
         else:
@@ -363,6 +442,8 @@ class ChartPainter:
                          barmode=barmode,
                          opacity=opacity,
                          orientation=orientation,
+                         height=height,
+                         width=width,
                          **kwargs)
             if add_line and continuous and categorical:
                 fig.data[-1].name = continuous
@@ -381,24 +462,28 @@ class ChartPainter:
                                              marker_color=px.colors.qualitative.Plotly[i + 1 % 10],
                                              line_width=3,
                                              yaxis='y' + str(i + 2)))
-                    layout_a[f'yaxis{i + 2}'] = dict(title=a, overlaying='y', anchor='free', side='right',
-                                                     showgrid=False, position=1 - i * 0.07,
-                                                     titlefont=dict(color=px.colors.qualitative.Plotly[i + 1 % 10]),
-                                                     tickfont=dict(color=px.colors.qualitative.Plotly[i + 1 % 10]))
+                    layout_a[f'yaxis{i + 2}'] = dict(title=a,
+                                                     overlaying='y',
+                                                     anchor='free',
+                                                     side='right',
+                                                     showgrid=False,
+                                                     position=1 - i * 0.07,
+                                                     titlefont_color=px.colors.qualitative.Plotly[i + 1 % 10],
+                                                     tickfont_color=px.colors.qualitative.Plotly[i + 1 % 10])
                 fig.update_traces(hovertemplate=None,
                                   showlegend=True)
                 fig.update_layout(hovermode='x',
                                   xaxis_domain=[0, 1 - 0.07 * (len(add_line) - 1)],
                                   **layout_a)
-        if text is True:
+        if text:
             fig.update_traces(texttemplate=texttemplate,
                               textposition='outside',
                               selector=dict(type='bar'))
         else:
             fig.update_traces(textposition='none',
                               selector=dict(type='bar'))
-        if edge is True:
-            fig.update_traces(marker=dict(line=dict(color='black', width=0.5)))
+        if edge:
+            fig.update_traces(marker_line=dict(color='black', width=0.5))
         if title == 'auto':
             if continuous:
                 title = f'Bar Chart of {continuous}'
@@ -406,20 +491,32 @@ class ChartPainter:
                 title = 'Bar Chart'
         if type(x) == list or type(y) == list or add_line:
             legend = dict(orientation='h', x=0.5, xanchor='center', y=1.01, yanchor='bottom', title=None)
-            margin = dict(l=0, r=0, t=80, b=0)
+            margin = dict(l=5, r=5, t=80, b=5)
         else:
             legend = {}
-            margin = dict(l=0, r=0, t=50, b=0)
+            margin = dict(l=5, r=5, t=50, b=5)
         fig.update_layout(title=dict(text=title, x=0.5, xref='paper'),
                           legend=legend,
                           margin=margin,
-                          yaxis_autorange=autorange)
-        if slider is True:
+                          yaxis_autorange=autorange,
+                          font_size=font_size,
+                          newshape_line_color=self._newshape_line_color)
+        if slider:
             fig.update_xaxes(rangeslider_visible=True)
-        fig.show()
+        fig.show(config=self._config)
 
-    def box(self, x=None, y=None, color=None, subplots=None, boxmode='group', points='outliers', orientation='auto',
-            title='auto', **kwargs):
+    def box(self, x: Optional[Union[str, List[str]]] = None,
+            y: Optional[Union[str, List[str]]] = None,
+            color: Optional[str] = None,
+            subplots: Optional[Tuple[str, str, int]] = None,
+            boxmode: str = 'group',
+            points: str = 'outliers',
+            orientation: str = 'auto',
+            title: str = 'auto',
+            height: Optional[int] = None,
+            width: Optional[int] = None,
+            font_size: int = 12,
+            **kwargs: Optional[Any]) -> NoReturn:
         """
         Makes a box plot.
 
@@ -464,16 +561,25 @@ class ChartPainter:
         title: str, default='auto'
             Title of the graph. When 'auto', the title is generated automatically.
 
+        height: int, default=None
+            Height of the figure in pixels.
+
+        width: int, default=None
+            Width of the figure in pixels.
+
+        font_size: int, default=12
+            Size of the global font.
+
         **kwargs: optional
             See 'plotly.express.box' for other possible arguments.
-
-        Returns
-        -------
-        plotly.graph_objects.Figure
         """
         if x is None and y is None:
             raise ValueError("Either 'x' or 'y' must be given")
-        data = self._data
+
+        cols_or_lists = [x, y, color, list(subplots[:2]) if subplots is not None else []]
+        cols_or_lists = [el for el in cols_or_lists if el is not None]
+        data = self._get_data(list(itertools.chain(*[[el] if isinstance(el, str) else el for el in cols_or_lists])))
+
         if orientation == 'auto':
             orientation = None
         if subplots:
@@ -497,6 +603,8 @@ class ChartPainter:
                      color_discrete_sequence=color_discrete_sequence,
                      points=points,
                      orientation=orientation,
+                     height=height,
+                     width=width,
                      **kwargs)
         if title == 'auto':
             if y and type(y) != list and pd.api.types.is_numeric_dtype(data[y]):
@@ -506,11 +614,31 @@ class ChartPainter:
             else:
                 title = 'Box Plot'
         fig.update_layout(title=dict(text=title, x=0.5, xref='paper'),
-                          margin=dict(l=0, r=0, t=50, b=0))
-        fig.show()
+                          margin=dict(l=5, r=5, t=50, b=5),
+                          font_size=font_size,
+                          newshape_line_color=self._newshape_line_color)
+        fig.show(config=self._config)
 
-    def scatter(self, x=None, y=None, sort=None, n=None, color=None, size=None, symbol=None, subplots=None, text=None,
-                size_max=20, orientation='auto', opacity=1, edge=False, title='auto', slider=False, **kwargs):
+    def scatter(self, x: Optional[Union[str, List[str]]] = None,
+                y: Optional[Union[str, List[str]]] = None,
+                sort: Optional[str] = None,
+                n: Optional[int] = None,
+                color: Optional[str] = None,
+                size: Optional[Union[str, int]] = None,
+                symbol: Optional[str] = None,
+                subplots: Optional[Tuple[str, str, int]] = None,
+                text: Optional[str] = None,
+                decimals: int = 2,
+                size_max: int = 20,
+                orientation: str = 'auto',
+                opacity: float = 1.0,
+                edge: bool = False,
+                title: str = 'auto',
+                slider: bool = False,
+                height: Optional[int] = None,
+                width: Optional[int] = None,
+                font_size: int = 12,
+                **kwargs: Optional[Any]) -> NoReturn:
         """
         Makes a scatter plot.
 
@@ -555,6 +683,9 @@ class ChartPainter:
         text: str, default=None
             Name of the column to use as text labels in the figure.
 
+        decimals: int, default=2
+            Number of decimal places to round 'text' labels of a float dtype to.
+
         size_max: int, default=20
             The maximum marker size. Used if 'size' is given.
 
@@ -563,7 +694,7 @@ class ChartPainter:
             By default, it is determined automatically based on the input
             data types.
 
-        opacity: float, default=1
+        opacity: float, default=1.0
             Opacity of the markers. Ranges from 0 to 1.
 
         edge: bool, default=False
@@ -575,16 +706,27 @@ class ChartPainter:
         slider: bool, default=False
             Whether to add a range slider to the plot.
 
+        height: int, default=None
+            Height of the figure in pixels.
+
+        width: int, default=None
+            Width of the figure in pixels.
+
+        font_size: int, default=12
+            Size of the global font.
+
         **kwargs: optional
             See 'plotly.express.scatter' for other possible arguments.
-
-        Returns
-        -------
-        plotly.graph_objects.Figure
         """
         if x is None and y is None:
             raise ValueError("Either 'x' or 'y' must be given")
-        data = self._data
+
+        cols_or_lists = [x, y, sort, color, list(subplots[:2]) if subplots is not None else [], symbol, text]
+        if isinstance(size, str):
+            cols_or_lists.append(size)
+        cols_or_lists = [el for el in cols_or_lists if el is not None]
+        data = self._get_data(list(itertools.chain(*[[el] if isinstance(el, str) else el for el in cols_or_lists])))
+
         if sort:
             if n > 0:
                 data = data.sort_values(by=sort, ascending=False).head(n)
@@ -621,16 +763,20 @@ class ChartPainter:
                          opacity=opacity,
                          size_max=size_max,
                          orientation=orientation,
+                         height=height,
+                         width=width,
                          **kwargs)
-        if edge is True:
-            fig.update_traces(marker=dict(line=dict(color='black', width=0.5)))
+        if edge:
+            fig.update_traces(marker_line=dict(color='black', width=0.5))
         if marker_size:
             fig.update_traces(marker_size=marker_size)
         if text:
             if pd.api.types.is_integer_dtype(data[text]):
-                texttemplate = '%{text:.f}'
+                texttemplate = '%{text:d}'
+            elif pd.api.types.is_float_dtype(data[text]):
+                texttemplate = f'%{{text:.{decimals}f}}'
             else:
-                texttemplate = '%{text:.2f}'
+                texttemplate = '%{text}'
             fig.update_traces(texttemplate=texttemplate,
                               textposition='middle right')
         if title == 'auto':
@@ -647,20 +793,38 @@ class ChartPainter:
             autorange = 'reversed'
         if type(x) == list or type(y) == list:
             legend = dict(orientation='h', x=0.5, xanchor='center', y=1.01, yanchor='bottom', title=None)
-            margin = dict(l=0, r=0, t=80, b=0)
+            margin = dict(l=5, r=5, t=80, b=5)
         else:
             legend = {}
-            margin = dict(l=0, r=0, t=50, b=0)
+            margin = dict(l=5, r=5, t=50, b=5)
         fig.update_layout(title=dict(text=title, x=0.5, xref='paper'),
                           legend=legend,
                           margin=margin,
-                          yaxis_autorange=autorange)
-        if slider is True:
+                          yaxis_autorange=autorange,
+                          font_size=font_size,
+                          newshape_line_color=self._newshape_line_color)
+        if slider:
             fig.update_xaxes(rangeslider_visible=True)
-        fig.show()
+        fig.show(config=self._config)
 
-    def line(self, x=None, y=None, sort=None, n=None, color=None, group=None, dash=None, subplots=None, text=None,
-             orientation='auto', line_width=2, title='auto', slider=False, **kwargs):
+    def line(self, x: Optional[Union[str, List[str]]] = None,
+             y: Optional[Union[str, List[str]]] = None,
+             sort: Optional[str] = None,
+             n: Optional[int] = None,
+             color: Optional[str] = None,
+             group: Optional[str] = None,
+             dash: Optional[str] = None,
+             subplots: Optional[Tuple[str, str, int]] = None,
+             text: Optional[str] = None,
+             decimals: int = 2,
+             orientation: str = 'auto',
+             line_width: int = 2,
+             title: str = 'auto',
+             slider: bool = False,
+             height: Optional[int] = None,
+             width: Optional[int] = None,
+             font_size: int = 12,
+             **kwargs: Optional[Any]) -> NoReturn:
         """
         Makes a line plot.
 
@@ -704,6 +868,9 @@ class ChartPainter:
         text: str, default=None
             Name of the column to use as text labels in the figure.
 
+        decimals: int, default=2
+            Number of decimal places to round 'text' labels of a float dtype to.
+
         orientation: {'auto', 'v', 'h'}, default='auto'
             Orientation of the graph: 'v' for vertical and 'h' for horizontal.
             By default, it is determined automatically based on the input
@@ -718,16 +885,25 @@ class ChartPainter:
         slider: bool, default=False
             Whether to add a range slider to the plot.
 
+        height: int, default=None
+            Height of the figure in pixels.
+
+        width: int, default=None
+            Width of the figure in pixels.
+
+        font_size: int, default=12
+            Size of the global font.
+
         **kwargs: optional
             See 'plotly.express.line' for other possible arguments.
-
-        Returns
-        -------
-        plotly.graph_objects.Figure
         """
         if x is None and y is None:
             raise ValueError("Either 'x' or 'y' must be given")
-        data = self._data
+
+        cols_or_lists = [x, y, sort, color, list(subplots[:2]) if subplots is not None else [], group, dash, text]
+        cols_or_lists = [el for el in cols_or_lists if el is not None]
+        data = self._get_data(list(itertools.chain(*[[el] if isinstance(el, str) else el for el in cols_or_lists])))
+
         if sort:
             if n > 0:
                 data = data.sort_values(by=sort, ascending=False).head(n)
@@ -757,13 +933,17 @@ class ChartPainter:
                       facet_col_wrap=facet_col_wrap,
                       color_discrete_sequence=color_discrete_sequence,
                       orientation=orientation,
+                      height=height,
+                      width=width,
                       **kwargs)
         fig.update_traces(line_width=line_width)
         if text:
             if pd.api.types.is_integer_dtype(data[text]):
-                texttemplate = '%{text:.f}'
+                texttemplate = '%{text:d}'
+            elif pd.api.types.is_float_dtype(data[text]):
+                texttemplate = f'%{{text:.{decimals}f}}'
             else:
-                texttemplate = '%{text:.2f}'
+                texttemplate = '%{text}'
             fig.update_traces(texttemplate=texttemplate,
                               textposition='top right')
         if title == 'auto':
@@ -780,20 +960,35 @@ class ChartPainter:
             autorange = 'reversed'
         if type(x) == list or type(y) == list:
             legend = dict(orientation='h', x=0.5, xanchor='center', y=1.01, yanchor='bottom', title=None)
-            margin = dict(l=0, r=0, t=80, b=0)
+            margin = dict(l=5, r=5, t=80, b=5)
         else:
             legend = {}
-            margin = dict(l=0, r=0, t=50, b=0)
+            margin = dict(l=5, r=5, t=50, b=5)
         fig.update_layout(title=dict(text=title, x=0.5, xref='paper'),
                           legend=legend,
                           margin=margin,
-                          yaxis_autorange=autorange)
-        if slider is True:
+                          yaxis_autorange=autorange,
+                          font_size=font_size,
+                          newshape_line_color=self._newshape_line_color)
+        if slider:
             fig.update_xaxes(rangeslider_visible=True)
-        fig.show()
+        fig.show(config=self._config)
 
-    def pie(self, labels, values=None, color=None, n=None, remainder=True, text='percent', text_orientation='auto',
-            hole=0.4, opacity=1, edge=True, title='auto', **kwargs):
+    def pie(self, labels: str,
+            values: Optional[str] = None,
+            color: Optional[str] = None,
+            n: Optional[int] = None,
+            remainder: bool = True,
+            text: str = 'percent',
+            text_orientation: str = 'auto',
+            hole: float = 0.4,
+            opacity: float = 1.0,
+            edge: bool = True,
+            title: str = 'auto',
+            height: Optional[int] = None,
+            width: Optional[int] = None,
+            font_size: int = 12,
+            **kwargs: Optional[Any]) -> NoReturn:
         """
         Makes a pie chart.
 
@@ -835,7 +1030,7 @@ class ChartPainter:
             Fraction of the radius to cut out of the pie to create a donut chart.
             Ranges from 0 to 1.
 
-        opacity: float, default=1
+        opacity: float, default=1.0
             Opacity of the sectors. Ranges from 0 to 1.
 
         edge: bool, default=True
@@ -844,14 +1039,22 @@ class ChartPainter:
         title: str, default='auto'
             Title of the graph. When 'auto', the title is generated automatically.
 
+        height: int, default=None
+            Height of the figure in pixels.
+
+        width: int, default=None
+            Width of the figure in pixels.
+
+        font_size: int, default=12
+            Size of the global font.
+
         **kwargs: optional
             See 'plotly.express.pie' for other possible arguments.
-
-        Returns
-        -------
-        plotly.graph_objects.Figure
         """
-        data = self._data
+        cols_or_lists = [labels, values, color]
+        cols_or_lists = [el for el in cols_or_lists if el is not None]
+        data = self._get_data(list(itertools.chain(*[[el] if isinstance(el, str) else el for el in cols_or_lists])))
+
         labels_input = labels
         values_input = values
         if not values:
@@ -899,22 +1102,35 @@ class ChartPainter:
                      color_discrete_sequence=color_discrete_sequence,
                      opacity=opacity,
                      hole=hole,
+                     height=height,
+                     width=width,
                      **kwargs)
         fig.update_traces(sort=False,
                           textinfo=text,
                           insidetextorientation=text_orientation)
-        if edge is True:
-            fig.update_traces(marker=dict(line=dict(color='white', width=1)))
+        if edge:
+            fig.update_traces(marker_line=dict(color='white', width=1))
         if not values_input:
             fig.update_traces(hovertemplate=hovertemplate)
         if title == 'auto':
             title = f'Pie Chart of {labels_input}'
         fig.update_layout(title=dict(text=title, x=0.5, xref='paper'),
-                          legend=dict(title=labels_input),
-                          margin=dict(l=0, r=0, t=50, b=0))
-        fig.show()
+                          legend_title=labels_input,
+                          margin=dict(l=5, r=5, t=50, b=5),
+                          font_size=font_size,
+                          newshape_line_color=self._newshape_line_color)
+        fig.show(config=self._config)
 
-    def sunburst(self, path, values=None, color=None, maxdepth=-1, text_orientation='auto', title='auto', **kwargs):
+    def sunburst(self, path: List[str],
+                 values: Optional[str] = None,
+                 color: Optional[str] = None,
+                 maxdepth: int = -1,
+                 text_orientation: str = 'auto',
+                 title: str = 'auto',
+                 height: Optional[int] = None,
+                 width: Optional[int] = None,
+                 font_size: int = 12,
+                 **kwargs: Optional[Any]) -> NoReturn:
         """
         Makes a sunburst plot.
 
@@ -948,14 +1164,22 @@ class ChartPainter:
         title: str, default='auto'
             Title of the graph. When 'auto', the title is generated automatically.
 
+        height: int, default=None
+            Height of the figure in pixels.
+
+        width: int, default=None
+            Width of the figure in pixels.
+
+        font_size: int, default=12
+            Size of the global font.
+
         **kwargs: optional
             See 'plotly.express.sunburst' for other possible arguments.
-
-        Returns
-        -------
-        plotly.graph_objects.Figure
         """
-        data = self._data
+        cols_or_lists = [path, values, color]
+        cols_or_lists = [el for el in cols_or_lists if el is not None]
+        data = self._get_data(list(itertools.chain(*[[el] if isinstance(el, str) else el for el in cols_or_lists])))
+
         len_labels = data[path[0]].nunique()
         nums = np.linspace(0, len_labels, len_labels) / len_labels
         color_discrete_sequence = [get_continuous_color(self._colorscale, z) for z in nums]
@@ -965,16 +1189,113 @@ class ChartPainter:
                           color=color,
                           color_discrete_sequence=color_discrete_sequence,
                           maxdepth=maxdepth,
+                          height=height,
+                          width=width,
                           **kwargs)
         fig.update_traces(insidetextorientation=text_orientation)
         if title == 'auto':
             title = f'Sunburst Plot of {path[0]}'
         fig.update_layout(title=dict(text=title, x=0.5, xref='paper'),
-                          margin=dict(l=0, r=0, t=50, b=0))
-        fig.show()
+                          margin=dict(l=5, r=5, t=50, b=5),
+                          font_size=font_size,
+                          newshape_line_color=self._newshape_line_color)
+        fig.show(config=self._config)
 
-    def heatmap(self, x=None, y=None, color=None, subplots=None, nbins=None, agg=None, orientation='auto',
-                title='auto', **kwargs):
+    def heatmap(self, labels: Optional[Tuple[str, str, str]] = None,
+                text: bool = False,
+                decimals: int = 2,
+                xaxis_side: str = 'bottom',
+                title: str = 'auto',
+                height: Optional[int] = None,
+                width: Optional[int] = None,
+                font_size: int = 12,
+                **kwargs: Optional[Any]) -> NoReturn:
+        """
+        Makes a heatmap.
+
+        Parameters
+        ----------
+        labels: (x, y, color), default=None
+            Label names to display in the figure for axis (x and y) and
+            colorbar (color) titles and hover boxes.
+
+        text: bool, default=False
+            Whether to show annotation text in the figure.
+
+        decimals: int, default=2
+            Number of decimal places to round annotations to.
+
+        xaxis_side: {'bottom', 'top'}, default='bottom'
+            Position of the x-axis in the figure.
+
+        title: str, default='auto'
+            Title of the graph. When 'auto', the title is generated automatically.
+
+        height: int, default=None
+            Height of the figure in pixels.
+
+        width: int, default=None
+            Width of the figure in pixels.
+
+        font_size: int, default=12
+            Size of the global font.
+
+        **kwargs: optional
+            See 'plotly.figure_factory.create_annotated_heatmap' for other
+            possible arguments.
+        """
+        if not isinstance(self._data, pd.DataFrame):
+            raise TypeError('Input data must be given as a pandas.DataFrame')
+        data = self._data
+        if labels:
+            xaxis_title, yaxis_title, color_title = labels
+        else:
+            xaxis_title, yaxis_title, color_title = None, None, None
+            if data.columns.name:
+                xaxis_title = data.columns.name
+            if data.index.name:
+                yaxis_title = data.index.name
+        x = xaxis_title if xaxis_title is not None else 'x'
+        y = yaxis_title if yaxis_title is not None else 'y'
+        z = color_title if color_title is not None else 'value'
+        if text:
+            annotation_text = np.around(data.values[::-1], decimals=decimals)
+        else:
+            annotation_text = np.empty(data.shape, dtype=str)
+        fig = ff.create_annotated_heatmap(data.values[::-1],
+                                          x=list(data.columns),
+                                          y=list(data.index)[::-1],
+                                          showscale=True,
+                                          colorscale=self._colorscale,
+                                          annotation_text=annotation_text,
+                                          colorbar_title_text=color_title,
+                                          **kwargs)
+        fig.update_xaxes(side=xaxis_side)
+        fig.update_traces(hovertemplate=f'{x}=%{{x}}<br>{y}=%{{y}}<br>{z}=%{{z}}<extra></extra>')
+        if title == 'auto':
+            title = 'Heatmap'
+        fig.update_layout(title=dict(text=title, x=0.5, xref='paper'),
+                          xaxis_title=xaxis_title,
+                          yaxis_title=yaxis_title,
+                          margin=dict(l=5, r=5, t=50, b=5),
+                          height=height,
+                          width=width,
+                          font_size=font_size,
+                          newshape_line_color=self._newshape_line_color)
+        fig.show(config=self._config)
+
+    def density_heatmap(self, x: Optional[Union[str, List[str]]] = None,
+                        y: Optional[Union[str, List[str]]] = None,
+                        color: Optional[str] = None,
+                        subplots: Optional[Tuple[str, str, int]] = None,
+                        nbins: Optional[Tuple[int, int]] = None,
+                        agg: str = None,
+                        orientation: str = 'auto',
+                        title: str = 'auto',
+                        height: Optional[int] = None,
+                        width: Optional[int] = None,
+                        font_size: int = 12,
+                        **kwargs: Optional[Any]) -> NoReturn:
         """
         Makes a density heatmap.
 
@@ -1015,16 +1336,25 @@ class ChartPainter:
         title: str, default='auto'
             Title of the graph. When 'auto', the title is generated automatically.
 
+        height: int, default=None
+            Height of the figure in pixels.
+
+        width: int, default=None
+            Width of the figure in pixels.
+
+        font_size: int, default=12
+            Size of the global font.
+
         **kwargs: optional
             See 'plotly.express.density_heatmap' for other possible arguments.
-
-        Returns
-        -------
-        plotly.graph_objects.Figure
         """
         if x is None and y is None:
             raise ValueError("Either 'x' or 'y' must be given")
-        data = self._data
+
+        cols_or_lists = [x, y, color, list(subplots[:2]) if subplots is not None else []]
+        cols_or_lists = [el for el in cols_or_lists if el is not None]
+        data = self._get_data(list(itertools.chain(*[[el] if isinstance(el, str) else el for el in cols_or_lists])))
+
         if orientation == 'auto':
             orientation = None
         if subplots:
@@ -1046,21 +1376,37 @@ class ChartPainter:
                                  nbinsy=nbinsy,
                                  orientation=orientation,
                                  histfunc=agg,
+                                 height=height,
+                                 width=width,
                                  **kwargs)
         if title == 'auto':
             if x and y:
-                title = f'2D Heat Map of {x} and {y}'
+                title = f'Density Heatmap of {x} and {y}'
             elif x:
-                title = f'2D Heat Map of {x}'
+                title = f'Density Heatmap of {x}'
             elif y:
-                title = f'2D Heat Map of {y}'
+                title = f'Density Heatmap of {y}'
             else:
-                title = '2D Heat Map'
+                title = 'Density Heatmap'
         fig.update_layout(title=dict(text=title, x=0.5, xref='paper'),
-                          margin=dict(l=0, r=0, t=50, b=0))
-        fig.show()
+                          margin=dict(l=5, r=5, t=50, b=5),
+                          font_size=font_size,
+                          newshape_line_color=self._newshape_line_color)
+        fig.show(config=self._config)
 
-    def gantt(self, x_start, x_end, y=None, color=None, subplots=None, text=None, opacity=1, title='auto', **kwargs):
+    def gantt(self, x_start: str,
+              x_end: str,
+              y: Optional[str] = None,
+              color: Optional[str] = None,
+              subplots: Optional[Tuple[str, str, int]] = None,
+              text: Optional[str] = None,
+              decimals: int = 2,
+              opacity: float = 1.0,
+              title: str = 'auto',
+              height: Optional[int] = None,
+              width: Optional[int] = None,
+              font_size: int = 12,
+              **kwargs: Optional[Any]) -> NoReturn:
         """
         Makes a Gantt chart.
 
@@ -1089,20 +1435,31 @@ class ChartPainter:
         text: str, default=None
             Name of the column to use as text labels in the figure.
 
-        opacity: float, default=1
+        decimals: int, default=2
+            Number of decimal places to round 'text' labels of a float dtype to.
+
+        opacity: float, default=1.0
             Opacity of the bars. Ranges from 0 to 1.
 
         title: str, default='auto'
             Title of the graph. When 'auto', the title is generated automatically.
 
+        height: int, default=None
+            Height of the figure in pixels.
+
+        width: int, default=None
+            Width of the figure in pixels.
+
+        font_size: int, default=12
+            Size of the global font.
+
         **kwargs: optional
             See 'plotly.express.timeline' for other possible arguments.
-
-        Returns
-        -------
-        plotly.graph_objects.Figure
         """
-        data = self._data
+        cols_or_lists = [x_start, x_end, y, color, list(subplots[:2]) if subplots is not None else []]
+        cols_or_lists = [el for el in cols_or_lists if el is not None]
+        data = self._get_data(list(itertools.chain(*[[el] if isinstance(el, str) else el for el in cols_or_lists])))
+
         if subplots:
             facet_row, facet_col, facet_col_wrap = subplots[0], subplots[1], subplots[2]
         else:
@@ -1124,22 +1481,37 @@ class ChartPainter:
                           color_discrete_sequence=color_discrete_sequence,
                           text=text,
                           opacity=opacity,
+                          height=height,
+                          width=width,
                           **kwargs)
         if text:
             if pd.api.types.is_integer_dtype(data[text]):
-                texttemplate = '%{text:.f}'
+                texttemplate = '%{text:d}'
+            elif pd.api.types.is_float_dtype(data[text]):
+                texttemplate = f'%{{text:.{decimals}f}}'
             else:
-                texttemplate = '%{text:.2f}'
+                texttemplate = '%{text}'
             fig.update_traces(texttemplate=texttemplate,
                               textposition='auto')  # ['inside', 'outside', 'auto', 'none']
         if title == 'auto':
             title = f'Gantt Chart'
         fig.update_layout(title=dict(text=title, x=0.5, xref='paper'),
-                          margin=dict(l=0, r=0, t=50, b=0),
-                          yaxis_autorange='reversed')
-        fig.show()
+                          margin=dict(l=5, r=5, t=50, b=5),
+                          yaxis_autorange='reversed',
+                          font_size=font_size,
+                          newshape_line_color=self._newshape_line_color)
+        fig.show(config=self._config)
 
-    def pareto(self, x, bins='auto', text=False, opacity=0.8, edge=False, title='auto'):
+    def pareto(self, x: str,
+               bins: Union[List[int], str] = 'auto',
+               text: bool = False,
+               decimals: int = 2,
+               opacity: float = 0.8,
+               edge: bool = False,
+               title: str = 'auto',
+               height: Optional[int] = None,
+               width: Optional[int] = None,
+               font_size: int = 12) -> NoReturn:
         """
         Makes a Pareto chart.
 
@@ -1149,11 +1521,14 @@ class ChartPainter:
             Name of the column to make graph for.
 
         bins: list of int or 'auto', default='auto'
-            List of the x coordinates of the bars. If 'auto, bins are determined
+            List of the x coordinates of the bars. If 'auto', bins are determined
             automatically.
 
         text: bool, default=False
             Whether to show text labels in the figure.
+
+        decimals: int, default=2
+            Number of decimal places to round cumulative percentage to.
 
         opacity: float, default=0.8
             Opacity of the bars. Ranges from 0 to 1.
@@ -1164,17 +1539,24 @@ class ChartPainter:
         title: str, default='auto'
             Title of the graph. When 'auto', the title is generated automatically.
 
-        Returns
-        -------
-        plotly.graph_objects.Figure
+        height: int, default=None
+            Height of the figure in pixels.
+
+        width: int, default=None
+            Width of the figure in pixels.
+
+        font_size: int, default=12
+            Size of the global font.
         """
-        if pd.api.types.is_numeric_dtype(self._data[x]):
+        _data = self._get_data(x)
+
+        if pd.api.types.is_numeric_dtype(_data[x]):
             if bins == 'auto':
-                bins = np.arange(self._data[x].max() + 1)
-            data = pd.cut(x=self._data[x], bins=bins, right=False).value_counts().sort_index()
+                bins = np.arange(_data[x].max() + 1)
+            data = pd.cut(x=_data[x], bins=bins, right=False).value_counts().sort_index()
             labels = bins  # [str(i) for i in data.index]
         else:
-            data = self._data[x].value_counts()
+            data = _data[x].value_counts()
             labels = data.index
         values = data.values
         shares = np.cumsum(data / data.sum()).values * 100
@@ -1183,7 +1565,7 @@ class ChartPainter:
         if edge:
             line = dict(color='black', width=0.6)
         else:
-            line = dict()
+            line = {}
         fig = go.Figure()
         fig.add_trace(go.Bar(x=labels,
                              y=values,
@@ -1196,26 +1578,168 @@ class ChartPainter:
                                  yaxis='y2',
                                  name='Cumulative Percentage',
                                  mode='lines',
-                                 marker=dict(color=px.colors.qualitative.Plotly[0]),
-                                 line=dict(width=3)))
-        if text is True:
-            fig.update_traces(texttemplate='%{text:.0f}',
+                                 marker_color=px.colors.qualitative.Plotly[0],
+                                 line_width=3))
+        if text:
+            fig.update_traces(texttemplate='%{text:d}',
                               textposition='outside',
                               selector=dict(type='bar'))
         fig.update_traces(hovertemplate='%{y}',
                           selector=dict(type='bar'))
-        fig.update_traces(hovertemplate='%{y:.2f}%',
+        fig.update_traces(hovertemplate=f'%{{y:.{decimals}f}}%',
                           selector=dict(type='scatter'))
         if title == 'auto':
             title = f'Pareto Chart of {x}'
         fig.update_layout(title=dict(text=title, x=0.5, xref='paper'),
-                          yaxis=dict(title='Frequency'),
-                          xaxis=dict(title=x),
+                          yaxis_title='Frequency',
+                          xaxis_title=x,
                           hovermode='x',
                           legend=dict(orientation='h', x=0.5, xanchor='center', y=1.01, yanchor='bottom'),
-                          margin=dict(l=0, r=0, t=80, b=0),
-                          yaxis2=dict(title='Cumulative Percentage', anchor='x', overlaying='y', side='right',
+                          margin=dict(l=5, r=5, t=80, b=5),
+                          height=height,
+                          width=width,
+                          yaxis2=dict(title='Cumulative Percentage',
+                                      anchor='x',
+                                      overlaying='y',
+                                      side='right',
                                       showgrid=False,
-                                      titlefont=dict(color=px.colors.qualitative.Plotly[0]),
-                                      tickfont=dict(color=px.colors.qualitative.Plotly[0])))
-        fig.show()
+                                      titlefont_color=px.colors.qualitative.Plotly[0],
+                                      tickfont_color=px.colors.qualitative.Plotly[0]),
+                          font_size=font_size,
+                          newshape_line_color=self._newshape_line_color)
+        fig.show(config=self._config)
+
+    def sankey(self, n: int = 10,
+               sort_labels: bool = False,
+               colored_links: bool = True,
+               opacity: float = 0.5,
+               orientation: str = 'h',
+               title: str = 'auto',
+               height: Optional[int] = None,
+               width: Optional[int] = None,
+               font_size: int = 10,
+               **kwargs: Optional[Any]) -> NoReturn:
+        """
+        Makes a Sankey diagram.
+
+        Parameters
+        ----------
+        n: int, default=10
+            Number of the most frequent process traces to make graph for.
+
+        sort_labels: bool, default=False
+            Whether to sort labels to rearrange nodes in the figure.
+
+        colored_links: bool, default=True
+            Whether to set colors to links. If False, a translucent grey is used.
+            If True, links are colored according to the source nodes.
+
+        opacity: float, default=0.5
+            Opacity of the links. Ranges from 0 to 1.
+
+        orientation: {'v', 'h'}, default='h'
+            Orientation of the graph: 'v' for vertical and 'h' for horizontal.
+
+        title: str, default='auto'
+            Title of the graph. When 'auto', the title is generated automatically.
+
+        height: int, default=None
+            Height of the figure in pixels.
+
+        width: int, default=None
+            Width of the figure in pixels.
+
+        font_size: int, default=12
+            Size of the global font.
+
+        **kwargs: optional
+            See 'plotly.graph_objects.Sankey' for other possible arguments.
+        """
+        if not isinstance(self._dh, DataHolder):
+            raise TypeError('Input data must be given as a sberpm.DataHolder')
+
+        top_traces = TraceMetric(self._dh).calc_metrics(*['count', 'ids']).sort_values('count', ascending=False).head(n)
+        data_grouped = self._data.groupby(self._dh.id_column, as_index=False).agg({self._dh.activity_column: list})
+        data_grouped[self._dh.activity_column] = data_grouped[self._dh.activity_column].apply(
+            lambda x: ['start'] + x + ['end'])
+        data = data_grouped.apply(pd.Series.explode)
+        dh = deepcopy(self._dh)
+        dh.data = data[data[dh.id_column].isin(list(set.union(*top_traces['ids'].values)))]
+
+        labels = list(dh.data[dh.activity_column].unique())
+        if sort_labels:
+            labels = sorted(labels)
+        act2ind = {k: v for v, k in enumerate(labels)}
+
+        t = pd.DataFrame(TransitionMetric(dh).count()).reset_index()
+        t['source'] = t['transition'].apply(lambda x: act2ind[x[0]])
+        t['target'] = t['transition'].apply(lambda x: act2ind[x[1]])
+
+        node_color = px.colors.convert_colors_to_same_type(px.colors.qualitative.Plotly)[0]
+        node_color *= ceil(len(labels) / len(node_color))
+        link_color = None
+        if colored_links:
+            link_color = t['source'].apply(lambda x: node_color[x % len(node_color)])
+            link_color = link_color.apply(lambda x: f'rgba{x[3:-1]}, {opacity})')
+
+        fig = go.Figure()
+        fig.add_trace(go.Sankey(node=dict(pad=10,
+                                          thickness=10,
+                                          line=dict(color='black', width=0.5),
+                                          label=labels,
+                                          color=node_color),
+                                link=dict(source=t['source'],
+                                          target=t['target'],
+                                          value=t['count'],
+                                          color=link_color),
+                                orientation=orientation,
+                                valueformat='d',
+                                **kwargs))
+        if title == 'auto':
+            title = f'Sankey Diagram of top {n} traces'
+        fig.update_layout(title=dict(text=title, x=0.5, xref='paper'),
+                          margin=dict(l=5, r=5, t=80, b=5),
+                          height=height,
+                          width=width,
+                          font_size=font_size,
+                          newshape_line_color=self._newshape_line_color)
+        fig.show(config=self._config)
+
+    def _get_data(self, metric_names: Union[str, List[str]]) -> pd.DataFrame:
+        """
+        If self._data is pd.Dataframe, just returns it.
+        If self._data is a metric object, calls the given methods
+        and returns the result as pandas.DataFrame.
+
+        Parameters
+        ----------
+        metric_names: str or list of str
+            Names of the metrics to calculate.
+
+        Returns
+        -------
+        result: pandas.DataFrame
+        """
+        if isinstance(self._data, pd.DataFrame):
+            return self._data
+        elif isinstance(self._data, (ActivityMetric, TransitionMetric, IdMetric, TraceMetric, UserMetric)):
+            metric_names = list(set(metric_names)) if not isinstance(metric_names, str) else [metric_names]
+            res = self._data.calc_metrics(*metric_names, raise_no_method=False)
+
+            if len(res.columns) == 0:
+                res = self._data.calc_metrics(*metric_names, raise_no_method=False)  # just for raising error
+
+            # make index a column and convert to str
+            index_name = res.index.name
+            if index_name not in res.columns:  # just in case
+                res[index_name] = res.index
+                res = res.reset_index(drop=True)
+            if pd.api.types.is_object_dtype(res[index_name]):
+                res[index_name] = res[index_name].astype(str)
+
+            for name in metric_names:
+                if name not in res.columns:
+                    self._data.calc_metrics(name, raise_no_method=True)  # just for raising error
+            return res
+        else:
+            raise RuntimeError()

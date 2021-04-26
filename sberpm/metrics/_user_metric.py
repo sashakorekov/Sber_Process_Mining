@@ -9,122 +9,119 @@ from ._base_metric import BaseMetric
 
 class UserMetric(BaseMetric):
     """
-    Class that contains metrics connected with users.
+    Class for calculating metrics for users.
 
     Parameters
     ----------
-    data_holder : DataHolder
+    data_holder: DataHolder
         Object that contains the event log and the names of its necessary columns.
 
-    time_unit : {'s'/'second', 'm'/'minute', 'h'/'hour', 'd'/'day', 'w'/'week'}, default='day'
-        Calculate time in needed format.
+    time_unit: {'s'/'second', 'm'/'minute', 'h'/'hour', 'd'/'day', 'w'/'week'}, default='day'
+        Calculate time/duration values in given format.
 
-    cycle_length : int (default = None)
-        Parameter for CycleMetric. If cycle_length is None CycleMetric find cycles of all lengths else of needed length.
+    round: int, default=None
+        Round float values of the metrics to the given number of decimals.
+
 
     Attributes
     ----------
-    _data_holder : DataHolder
-        Object that contains the event log and the names of its necessary columns.
-
-    _group_column : str
-        Column used for grouping the data.
-
-    _group_data: pandas.GroupBy object
-        Object that contains pandas.GroupBy data grouping by _group_column.
-
-    _user_column : str
-        Column of users in event log.
-
     metrics: pd.DataFrame
-        DataFrame contain all metrics that can be calculated
+        DataFrame that contains all calculated metrics.
     """
 
-    def __init__(self, data_holder, time_unit='day'):
-        super().__init__(data_holder, time_unit)
+    def __init__(self, data_holder, time_unit='hour', round=None):
+        super().__init__(data_holder, time_unit, round)
         self._group_column = data_holder.user_column
-        self._group_data = self._data_holder.data.groupby(self._group_column)
+        self._group_data = self._dh.data.groupby(self._group_column)
 
-    def apply(self, std=False):
+    def apply(self):
         """
-        Calculate all metrics:
-        unique_activities_num: number of unique activity that a user worked on
-        activities_count: number of all activities that a user worked on
-        unique_ids_num: number unique ids that a user worked on
-        workload_in_percent: workload of user in percent.
-            Number of activities that user did divided by a total number of activities in the event log.
-        total_duration: total time duration of grouped objects
-        min_duration: min time duration of grouped objects
-        max_duration: max time duration of grouped objects
-        mean_duration: mean time duration of grouped objects
-        median_duration: median time duration of grouped objects
-        variance_duration: variance of time duration of grouped objects
-        std_duration: std of time duration of grouped objects
-        """
-        if self.metrics is None:
-            self.metrics = pd.DataFrame(self.unique_activities()) \
-                .rename(columns={self._data_holder.activity_column: 'unique_activities'})
-            self.metrics['unique_activities_num'] = self.metrics['unique_activities'].apply(len)
-            self.metrics["activities_count"] = self.count_activities()
-            self.metrics['unique_ids_num'] = self.nunique_ids()
-            self.metrics['workload_in_percent'] = self.workload_in_percent()
-            self._calculate_time_metrics(self.metrics, self._group_data, std)
-            self.metrics = self.metrics.reset_index()
-        return self.metrics
-
-    def workload_in_percent(self):
-        """
-        Percentage of all transitions each user made.
+        Calculate all possible metrics for this object.
 
         Returns
         -------
-        result: pd.Series
-            Key: user, value: the metric's value.
+        result: pandas.DataFrame
         """
-        transitions_count = self._data_holder.data.groupby(
-            by=self._data_holder.user_column)[self._data_holder.activity_column].count()
-        return transitions_count / transitions_count.sum() * 100
+        self.metrics = pd.DataFrame(index=self._dh.data[self._group_column].unique()) \
+            .join(self.count()) \
+            .join(self.unique_activities()) \
+            .join(self.unique_activities_num()) \
+            .join(self.unique_ids()) \
+            .join(self.unique_ids_num()) \
+            .join(self.throughput()) \
+            .join(self.workload()) \
+            .join(self.calculate_time_metrics(True))
 
-    def count_activities(self):
+        return self.metrics.sort_values('count', ascending=False)
+
+    def count(self):
         """
-        Total number of activities each user worked on.
+        Return total count of users' occurrences in the event log
+        (= number of activities they worked on).
 
         Returns
         -------
-        result: pd.Series
-            Key: user, value: the metric's value.
+        result: pandas.Series
         """
-        return self._group_data.agg({self._data_holder.activity_column: 'count'})[self._data_holder.activity_column]
+        return self._group_data[self._group_column].count().rename('count')
 
     def unique_activities(self):
         """
-        Unique activities each user worked on.
+        Return unique activities each user worked on.
 
         Returns
         -------
-        result: pd.Series
-            Key: user, value: the metric's value.
+        result: pandas.Series
         """
-        return self._group_data.agg({self._data_holder.activity_column: set})[self._data_holder.activity_column]
+        return self._group_data.agg({self._dh.activity_column: set})[self._dh.activity_column] \
+            .rename('unique_activities')
 
-    def nunique_activities(self):
+    def unique_activities_num(self):
         """
-        Productivity of each user. The number of unique activities each user worked on.
-
-        Returns
-        -------
-        result: pd.Series
-            Key: user, value: the metric's value.
-        """
-        return self._group_data.agg({self._data_holder.activity_column: 'nunique'})[self._data_holder.activity_column]
-
-    def nunique_ids(self):
-        """
-        The number of unique event traces each user worked on.
+        Return number of unique activities each user worked on.
 
         Returns
         -------
-        result: pd.Series
-            Key: user, value: the metric's value.
+        result: pandas.Series
         """
-        return self._group_data.agg({self._data_holder.id_column: 'nunique'})[self._data_holder.id_column]
+        return self._group_data[self._dh.activity_column].nunique().rename('unique_activities_num')
+
+    def unique_ids(self):
+        """
+        Return unique IDs each user worked on.
+
+        Returns
+        -------
+        result: pandas.Series
+        """
+        return self._group_data.agg({self._dh.id_column: set})[self._dh.id_column].rename('unique_ids')
+
+    def unique_ids_num(self):
+        """
+        Return number of unique IDs each user worked on.
+
+        Returns
+        -------
+        result: pandas.Series
+        """
+        return self._group_data[self._dh.id_column].nunique().rename('unique_ids_num')
+
+    def throughput(self):
+        """
+        Return the average number of times each user performs an activity per time unit.
+
+        Returns
+        -------
+        result: pandas.Series
+        """
+        return (self.count() / self.total_duration()).rename('throughput')
+
+    def workload(self):
+        """
+        Return the fraction of all actions each user took.
+
+        Returns
+        -------
+        result: pandas.Series
+        """
+        return (self.count() / self.count().sum()).rename('workload')

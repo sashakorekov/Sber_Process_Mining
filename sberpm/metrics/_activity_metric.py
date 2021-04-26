@@ -3,91 +3,184 @@
 #   Link: https://github.com/pandas-dev/pandas
 
 import pandas as pd
-from ._cycle_metric import CycleMetric
 from ._base_metric import BaseMetric
+from ._utils import round_decorator
 
 
 class ActivityMetric(BaseMetric):
     """
-    Class that contains metrics connected with activities.
+    Class for calculating metrics for activities.
 
     Parameters
     ----------
-    data_holder : DataHolder
+    data_holder: DataHolder
         Object that contains the event log and the names of its necessary columns.
 
-    time_unit : {'s'/'second', 'm'/'minute', 'h'/'hour', 'd'/'day', 'w'/'week'}, default='day'
-        Calculate time in needed format.
+    time_unit: {'s'/'second', 'm'/'minute', 'h'/'hour', 'd'/'day', 'w'/'week'}, default='day'
+        Calculate time/duration values in given format.
 
-    cycle_length : int (default = None)
-        Parameter for CycleMetric. If cycle_length is None CycleMetric find cycles of all lengths else of needed length.
+    round: int, default=None
+        Round float values of the metrics to the given number of decimals.
 
     Attributes
     ----------
-    _data_holder : DataHolder
-        Object that contains the event log and the names of its necessary columns.
-
-    _group_column : str
-        Column used for grouping the data.
-
-    _group_data: pandas.GroupBy object
-        Object that contains pandas.GroupBy data grouping by _group_column.
-
-    _user_column : str
-        Column of users in event log.
-
     metrics: pd.DataFrame
-        DataFrame contain all metrics that can be calculated
-
-    _cycle_metric: CycleMetric
-        Object of class CycleMetric that find cycles in event log
+        DataFrame that contains calculated metrics.
     """
 
-    def __init__(self, data_holder, time_unit='day', cycle_length=None):
-        super().__init__(data_holder, time_unit)
-        self._cycle_metric = CycleMetric(data_holder, cycle_length)
-        self._group_column = data_holder.activity_column
-        self._group_data = self._data_holder.data.groupby(self._group_column)
+    def __init__(self, data_holder, time_unit='hour', round=None):
+        super().__init__(data_holder, time_unit, round)
 
-    def apply(self, std=False):
+        self._group_column = data_holder.activity_column
+        self._group_data = self._dh.data.groupby(self._group_column)
+
+    def apply(self):
         """
-        Calculate all metrics:
-        total_count: Total number of activity's occurrence in the event log.
-        unique_ids_num: number of unique ids where the activity was
-        cycle_percent: percent of cycles from total frequency of an activity
-        unique_users_num: number of unique users that work on an activity
-        total_duration: total time duration of grouped objects
-        min_duration: min time duration of grouped objects
-        max_duration: max time duration of grouped objects
-        mean_duration: mean time duration of grouped objects
-        median_duration: median time duration of grouped objects
-        variance_duration: variance of time duration of grouped objects
-        std_duration: std of time duration of grouped objects
+        Calculate all possible metrics for this object.
+
+        Returns
+        -------
+        result: pandas.DataFrame
         """
-        if self.metrics is None:
-            self.metrics = self._group_data.agg({self._data_holder.id_column: set}).reset_index() \
-                .rename(columns={self._data_holder.id_column: 'unique_ids'})
-            self.metrics['total_count'] = self.count().values
-            self.metrics["unique_ids_num"] = self.metrics['unique_ids'].apply(len)
-            dict_cycle = self.cycle()
-            temp = self.metrics.apply(lambda x: dict_cycle[x[self._group_column]], axis=1)
-            self.metrics['cycle_percent'] = temp / self.metrics['total_count'] * 100
-            if self._user_column:
-                self.metrics['unique_users_num'] = self.nunique_users().values
-            self._calculate_time_metrics(self.metrics, self._group_data, std)
-        return self.metrics
+
+        self.metrics = pd.DataFrame(index=self._dh.data[self._group_column].unique()) \
+            .join(self.count()) \
+            .join(self.unique_ids()) \
+            .join(self.unique_ids_num()) \
+            .join(self.aver_count_in_trace()) \
+            .join(self.loop_percent()) \
+            .join(self.throughput())
+
+        if self._dh.user_column:
+            self.metrics = self.metrics \
+                .join(self.unique_users()) \
+                .join(self.unique_users_num())
+
+        self.metrics = self.metrics.join(self.calculate_time_metrics(True))
+
+        return self.metrics.sort_values('count', ascending=False)
 
     def count(self):
         """
-        Calculate number of activity
-        """
-        return self._group_data[self._group_column].count()
+        Return total count of activities in the event log.
 
-    def nunique_users(self):
+        Returns
+        -------
+        result: pandas.Series
         """
-        Calculate number of unique users worken on activity
-        """
-        return self._group_data[self._user_column].nunique()
+        return self._group_data[self._group_column].count().rename('count')
 
-    def cycle(self):
-        return self._cycle_metric.find()[0]
+    def unique_ids(self):
+        """
+        Return sets of unique IDs in which an activity took place.
+
+        Returns
+        -------
+        result: pandas.Series
+        """
+        return self._group_data.agg({self._dh.id_column: set})[self._dh.id_column].rename('unique_ids')
+
+    def unique_ids_num(self):
+        """
+        Return number of unique IDs in which an activity took place.
+
+        Returns
+        -------
+        result: pandas.Series
+        """
+        return self._group_data[self._dh.id_column].nunique().rename('unique_ids_num')
+
+    @round_decorator
+    def aver_count_in_trace(self):
+        """
+        Return average count of an activity in those event traces
+        where the activity occurred:
+
+         = total_count_of_activity / num_of_unique_ids_with_this_activity.
+
+        Thus, the minimum possible value is 1 (when activity occurs in ids exactly once).
+
+        Returns
+        -------
+        result: pandas.Series
+        """
+        return (self.count() / self.unique_ids_num()).rename('aver_count_in_trace')
+
+    @round_decorator
+    def loop_percent(self):
+        """
+        Return the percentage of activities that occurred for the 2nd, 3rd, 4th,...
+        time in the event traces (percentage of 'extra use' of the activities):
+
+         = (1 - num_of_unique_ids_with_this_activity / total_count_of_activity) * 100.
+
+        Thus, this value ranges from 0 to 1 (non-including) with zero being the best value.
+
+        Returns
+        -------
+        result: pandas.Series
+        """
+        return ((1 - self.unique_ids_num() / self.count()) * 100).rename('loop_percent')
+
+    def unique_users(self):
+        """
+        Return number of unique user that worked on the object.
+
+        Returns
+        -------
+        result: pandas.Series
+        """
+        return self._group_data.agg({self._dh.user_column: set})[self._dh.user_column].rename('unique_users')
+
+    def unique_users_num(self):
+        """
+        Return number of unique user that worked on the object.
+
+        Returns
+        -------
+        result: pandas.Series
+        """
+        return self._group_data[self._dh.user_column].nunique().rename('unique_users_num')
+
+    @round_decorator
+    def throughput(self):
+        """
+        Return the average number of times an activity is performed per time unit.
+
+        Returns
+        -------
+        result: pandas.Series
+        """
+        return (self.count() / self.total_duration()).rename('throughput')
+
+    @round_decorator
+    def success_rate(self, success_activities):
+        """
+        Return the percentage of successful ids for given activity.
+
+        Parameters
+        -----------
+        success_activities: iterable of str
+            List of activities.
+
+        Returns
+        -------
+        result: pandas.Series
+        """
+        return self.inclusion_rate(success_activities).rename('success_rate')
+
+    @round_decorator
+    def failure_rate(self, failure_activities):
+        """
+        Return the percentage of failed ids for given activity.
+
+        Parameters
+        -----------
+        failure_activities: iterable of str
+            List of activities.
+
+        Returns
+        -------
+        result: pandas.Series
+        """
+        return self.inclusion_rate(failure_activities).rename('failure_rate')

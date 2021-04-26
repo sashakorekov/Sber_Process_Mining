@@ -10,7 +10,7 @@ import pandas as pd
 import numpy as np
 
 from .._holder import DataHolder
-from ..metrics import ActivityMetric, TransitionMetric
+from ..metrics import ActivityMetric, TransitionMetric, UserMetric
 
 
 class AutoInsights:
@@ -25,9 +25,6 @@ class AutoInsights:
 
     time_unit: {'s'/'second', 'm'/'minute', 'h'/'hour', 'd'/'day', 'w'/'week'}, default='day'
         Time unit for representing the activities' durations.
-
-    cycle_length: int, default=None
-        Length of cycles to take into consideration.
 
     Examples
     --------
@@ -45,7 +42,7 @@ class AutoInsights:
     >>>painter.show()
     """
 
-    def __init__(self, data_holder, time_unit='day', cycle_length=None):
+    def __init__(self, data_holder, time_unit='hour'):
 
         if type(data_holder) == DataHolder:
             self._data_holder = data_holder
@@ -55,7 +52,7 @@ class AutoInsights:
         else:
             raise TypeError(f"data_holder must be of type DataHolder, but got: {type(data_holder)}")
 
-        self._activity_metric = ActivityMetric(data_holder, time_unit, cycle_length)
+        self._activity_metric = ActivityMetric(data_holder, time_unit)
         self._edge_metric = TransitionMetric(data_holder, time_unit)
         self._unique_activities = data_holder.get_unique_activities()
         self._time_unit = time_unit
@@ -65,6 +62,9 @@ class AutoInsights:
         self._node_insights = None
         self._edge_insights = None
 
+        self.success_activities = None
+        self.failure_activities = None
+
         self.graph = None
 
     def apply(self, miner, mode='overall', width_by_insight=True, q_min=0.1, q_top=0.85):
@@ -73,7 +73,7 @@ class AutoInsights:
 
         Parameters
         ----------
-        miner: sberpm.miners.SimpleMiner, sberpm.miners.CausalMiner, or sberpm.miners.HeuMiner
+        miner: {sberpm.miners.SimpleMiner, sberpm.miners.CausalMiner, sberpm.miners.HeuMiner}
             DFG-Miner object (SimpleMiner, CausalMiner, or HeuMiner).
 
         mode: {'overall', 'time', 'cycles'}, default='overall'
@@ -89,7 +89,7 @@ class AutoInsights:
             Quantile value for finding "bad" insights (if value is bigger than q_top).
         """
         node_name = 'activities'
-        edge_name = 'edges'
+        edge_name = 'transitions'
 
         self.graph = self._get_miner_graph(miner)
         node_stats = self._get_stats(self._activity_metric, node_name)
@@ -98,8 +98,8 @@ class AutoInsights:
         self._node_insights = self._get_insight(node_stats, q_min, q_top)
         self._edge_insights = self._get_insight(edge_stats, q_min, q_top)
 
-        node_colors = self._get_color(node_stats, self._node_insights, mode, node_name)
-        edge_colors = self._get_color(edge_stats, self._edge_insights, mode, edge_name)
+        node_colors = self._get_color(self._node_insights, mode, node_name)
+        edge_colors = self._get_color(self._edge_insights, mode, edge_name)
 
         labels = self._calculate_edge_labels(edge_stats, mode, edge_name)
 
@@ -113,8 +113,28 @@ class AutoInsights:
         self._add_legend(edge_stats, mode)
         if width_by_insight:
             width = self._edge_insights[self._edge_insights.columns[1:-1]].apply(lambda x: sum(x), axis=1).abs()
-            metric = {edge: value for edge, value in zip(self._edge_insights['edges'], width)}
+            metric = {edge: value for edge, value in zip(self._edge_insights['transitions'], width)}
             self.graph.add_edge_metric('insights', metric)
+
+    def set_success_activities(self, success_activities):
+        """
+        Sets success activities.
+
+        Parameters
+        ----------
+        success_activities: list.
+        """
+        self.success_activities = success_activities
+
+    def set_failure_activities(self, failure_activities):
+        """
+        Sets failure activities.
+
+        Parameters
+        ----------
+        failure_activities: list.
+        """
+        self.failure_activities = failure_activities
 
     def get_graph(self):
         return self.graph
@@ -125,17 +145,23 @@ class AutoInsights:
     def describe_edges(self):
         return self._edge_insights
 
-    @staticmethod
-    def _get_stats(metric, name_column):
-        stats = pd.DataFrame()
-        temp = metric.count()
-        stats[name_column] = temp.index
-        stats['count'] = tuple(temp)
-        stats['mean_time'] = tuple(metric.mean_time())
-        dict_cycle = metric.cycle()
-        stats['cycle'] = stats.apply(lambda x: dict_cycle[x[name_column]], axis=1)
-        if metric._user_column:
-            stats['nunique_users'] = tuple(metric.nunique_users())
+    def _get_stats(self, metric, name_column):
+        stats = pd.DataFrame(metric.count()) \
+            .join(metric.mean_duration()) \
+            .join(metric.loop_percent()) \
+            .join(metric.aver_count_in_trace()) \
+            .join(metric.throughput())
+
+        if self.success_activities is not None:
+            stats = stats.join(metric.success_rate(self.success_activities))
+        if self.failure_activities is not None:
+            stats = stats.join(- metric.failure_rate(self.failure_activities))
+        if metric._dh.user_column is not None:
+            stats = stats.join(metric.unique_users_num())
+            stats = stats.join(self._get_user_value(metric))
+
+        stats.index.rename(name_column, inplace=True)
+        stats = stats.reset_index(drop=False)  # index will become _name_column_ and be the first one
         return stats
 
     def _get_insight(self, stats, q_min, q_top):
@@ -144,7 +170,7 @@ class AutoInsights:
         insights[stats.columns[0]] = stats[stats.columns[0]]
         for column in stats.columns[1:]:
             insights[column] = stats[column].apply(
-                lambda x: self._insigth_by_quantile(x, threshold_min[column], threshold_top[column]))
+                lambda x: self._insight_by_quantile(x, threshold_min[column], threshold_top[column]))
         insights['insights'] = insights.apply(lambda x: self._sum_insight(x), axis=1)
         return insights
 
@@ -152,6 +178,17 @@ class AutoInsights:
     def _get_miner_graph(miner):
         miner.apply()
         return miner.graph
+
+    @staticmethod
+    def _get_user_value(metric):
+        um_df = UserMetric(metric._dh).apply()
+        user_values = np.zeros_like(um_df.index)
+        for col in um_df.columns[4:10]:
+            user_values += np.searchsorted(np.sort(um_df[col]), um_df[col])
+
+        u2v = dict(zip(um_df.index, user_values))
+        user_value = metric.unique_users().apply(lambda x: np.mean([u2v[i] for i in x]))
+        return user_value.rename('user_value')
 
     def _calculate_edge_labels(self, edge_stats, mode, edge_name):
         """
@@ -171,11 +208,11 @@ class AutoInsights:
             labels = {}
         elif mode == 'time':
             labels = {edge: str(round(mean_time, 1)) + self._time_unit for edge, mean_time in
-                      zip(edge_stats[edge_name], edge_stats['mean_time'])}
+                      zip(edge_stats[edge_name], edge_stats['mean_duration'])}
         elif mode == 'overall':
             labels = {}
-            for edge, mean_time, cycle, insight in zip(edge_stats[edge_name], edge_stats['mean_time'],
-                                                       edge_stats['cycle'], self._edge_insights['insights']):
+            for edge, mean_time, cycle, insight in zip(edge_stats[edge_name], edge_stats['mean_duration'],
+                                                       edge_stats['loop_percent'], self._edge_insights['insights']):
                 if insight == 1:
                     labels[edge] = str(round(mean_time, 1)) + self._time_unit
                     if cycle > 0:
@@ -185,7 +222,7 @@ class AutoInsights:
         return labels
 
     @staticmethod
-    def _get_color(stats, insights, mode, name_column):
+    def _get_color(insights, mode, name_column):
         """
         Sets colors for objects (nodes or edges) according to their 'insight' status.
 
@@ -209,7 +246,7 @@ class AutoInsights:
                 'red': bad insight (object's metric values are mostly big).
         """
         if mode == 'cycles':
-            colors = {act: 'red' for act, cycle in zip(insights[name_column], stats['cycle']) if cycle > 0}
+            colors = {act: 'red' for act, cycle in zip(insights[name_column], insights['loop_percent']) if cycle > 0}
         else:
             i2c = {1: 'red', 0: 'grey', -1: 'black'}
             colors = {act: i2c[ins] for act, ins in zip(insights[name_column], insights['insights'])}
@@ -222,20 +259,20 @@ class AutoInsights:
         if mode != 'overall':
             return
 
-        good_edges = [mean_time for mean_time, ins in zip(stats['mean_time'], self._edge_insights['insights']) if
+        good_edges = [mean_time for mean_time, ins in zip(stats['mean_duration'], self._edge_insights['insights']) if
                       ins < 0]
-        bad_edges = [mean_time for mean_time, ins in zip(stats['mean_time'], self._edge_insights['insights']) if
+        bad_edges = [mean_time for mean_time, ins in zip(stats['mean_duration'], self._edge_insights['insights']) if
                      ins > 0]
         good_time = np.nanmean(good_edges) if good_edges else 0
         bad_time = np.nanmean(bad_edges) if bad_edges else 0
         cycle_percent = np.mean(
-            [cycle > 0 for cycle, ins in zip(stats['cycle'], self._edge_insights['insights']) if ins > 0])
+            [cycle > 0 for cycle, ins in zip(stats['loop_percent'], self._edge_insights['insights']) if ins > 0])
         good_time = round(good_time, 1)
         bad_time = round(bad_time, 1)
         cycle_percent = round(cycle_percent * 100, 1)
-        legend = {'good': 'good insights\nmean_time: {}{}\ncycle %: {}%'.format(
-            good_time, self._time_unit, 0),
-            'bad': 'bad insights\nmean_time: {}{}\ncycle %: {}%'.format(
+        legend = {'good': 'good insights\\nmean_duration: {}{}\\ncycle %: {}%'.format(
+            good_time, self._time_unit, 0.0),
+            'bad': 'bad insights\\nmean_time: {}{}\\ncycle %: {}%'.format(
                 bad_time, self._time_unit, cycle_percent)}
 
         self.graph.add_node('legend_good', legend['good'])
@@ -256,7 +293,7 @@ class AutoInsights:
         return 0
 
     @staticmethod
-    def _insigth_by_quantile(x, th_min, th_top):
+    def _insight_by_quantile(x, th_min, th_top):
         if x < th_min:
             return -1
         elif x > th_top:
