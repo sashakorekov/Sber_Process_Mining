@@ -7,7 +7,7 @@ scipy>=1.4.1
 pydotplus>=2.0.2
 graphviz>=0.13.2
 IPython
-plotly
+plotly>=4.9.0
 # needed for plotly:
 nbformat>=4.2.0
 
