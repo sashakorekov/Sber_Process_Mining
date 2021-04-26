@@ -194,7 +194,7 @@ class GraphvizPainter:
 
         for node in graph.get_nodes():
             if hide_disconnected_nodes and len(node.output_edges) == 0 and len(node.input_edges) == 0 \
-                    and node.id not in ['legend_nice', 'legend_bad']:
+                    and node.id not in ['legend_good', 'legend_bad']:
                 continue
             style = 'filled'
             if node.type == NodeType.TASK:
@@ -347,7 +347,7 @@ class GraphvizPainter:
             Modified node's label.
         """
         for metric_name, metric_value in metrics.items():
-            label += '\n' + metric_name + ': ' + str(round(metric_value, 3))
+            label += '\\n' + metric_name + ': ' + str(round(metric_value, 3))
         return label
 
     @staticmethod

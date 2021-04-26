@@ -4,144 +4,194 @@
 
 import pandas as pd
 from ._base_metric import BaseMetric
-from ._cycle_metric import CycleMetric
+from ._utils import round_decorator
 
 
 class TransitionMetric(BaseMetric):
     """
-    Class that contains metrics connected with edges.
+    Class for calculating metrics for transitions
+    (pairs of consequent activities).
 
     Parameters
     ----------
-    data_holder : DataHolder
+    data_holder: DataHolder
         Object that contains the event log and the names of its necessary columns.
 
-    time_unit : {'s'/'second', 'm'/'minute', 'h'/'hour', 'd'/'day', 'w'/'week'}, default='day'
-        Calculate time in needed format.
+    time_unit: {'s'/'second', 'm'/'minute', 'h'/'hour', 'd'/'day', 'w'/'week'}, default='day'
+        Calculate time/duration values in given format.
+
+    round: int, default=None
+        Round float values of the metrics to the given number of decimals.
 
 
     Attributes
     ----------
-    _data_holder : DataHolder
-        Object that contains the event log and the names of its necessary columns.
-
-    _group_column : str
-        Column used for grouping the data.
-
-    _group_data: pandas.GroupBy object
-        Object that contains pandas.GroupBy data grouping by _group_column.
-
-    _user_column : str
-        Column of users in event log.
-
     metrics: pd.DataFrame
-        DataFrame contain all metrics that can be calculated
-
-    _unique_edges: pd.Series
-        Contain all edges of event log
+        DataFrame that contains all calculated metrics.
     """
 
-    def __init__(self, data_holder, time_unit='day', cycle_length=2):
-        super().__init__(data_holder, time_unit)
-        self._cycle_metric = CycleMetric(data_holder, cycle_length)
-        self._group_column = data_holder.activity_column
-        _edge_data = data_holder.data[
-            [data_holder.id_column, data_holder.activity_column, data_holder.duration_column]].copy()
-        if self._user_column:
-            _edge_data.loc[:, self._user_column] = data_holder.data[self._user_column]
+    def __init__(self, data_holder, time_unit='hour', round=None):
+        super().__init__(data_holder, time_unit, round)
 
-        if data_holder.start_timestamp_column is not None and data_holder.end_timestamp_column is None:
-            start_activity_col = _edge_data[data_holder.activity_column]
-            end_activity_col = _edge_data[data_holder.activity_column].shift(-1)
-            start_id_col = _edge_data[data_holder.id_column]
-            end_id_col = _edge_data[data_holder.id_column].shift(-1)
-        else:
-            start_activity_col = _edge_data[data_holder.activity_column].shift(1)
-            end_activity_col = _edge_data[data_holder.activity_column]
-            start_id_col = _edge_data[data_holder.id_column].shift(1)
-            end_id_col = _edge_data[data_holder.id_column]
+        act1 = data_holder.data[data_holder.activity_column]
+        act2 = data_holder.data[data_holder.activity_column].shift(-1)
+        id1 = data_holder.data[data_holder.id_column]
+        id2 = data_holder.data[data_holder.id_column].shift(-1)
+        tr_data = data_holder.data
 
-        _edge_data.loc[:, data_holder.activity_column] = tuple(start_activity_col + "-->" + end_activity_col)
-        id_mask = start_id_col != end_id_col
-        _edge_data.drop(_edge_data[id_mask].index, axis=0, inplace=True)
-        self._edge_data = _edge_data
-        self._unique_edges = _edge_data[self._group_column].unique()
-        self._group_data = _edge_data.groupby(self._group_column)
+        self._group_column = 'transition'
+        tr_data[self._group_column] = list(zip(act1, act2))
+        self._tr_data = tr_data[id1 == id2]
 
-    def apply(self, std=False):
-        """
-        Calculate all metrics:
-        total_count: frequency of edge
-        total_duration: total time duration of grouped objects
-        min_duration: min time duration of grouped objects
-        max_duration: max time duration of grouped objects
-        mean_duration: mean time duration of grouped objects
-        median_duration: median time duration of grouped objects
-        variance_duration: variance of time duration of grouped objects
-        std_duration: std of time duration of grouped objects
-        """
-        if self.metrics is None:
-            self.metrics = self._group_data.agg({self._data_holder.id_column: set}).reset_index() \
-                .rename(columns={self._data_holder.activity_column: 'transitions',
-                                 self._data_holder.id_column: 'unique_ids'})
-            self.metrics['total_count'] = self._group_data[self._group_column].count().values
-            self._calculate_time_metrics(self.metrics, self._group_data, std)
-            self.metrics['transitions'] = self.metrics['transitions'].apply(lambda x: self._split_tuple(x))
-        return self.metrics.sort_values('total_count', ascending=False).reset_index(drop=True)
+        self._group_data = self._tr_data.groupby(self._group_column)
 
-    def calculate_time_metrics(self, std=False):
+    def apply(self):
         """
-        Calculate time metrics
+        Calculate all possible metrics for this object.
+
+        Returns
+        -------
+        result: pandas.DataFrame
         """
-        metrics_df = super().calculate_time_metrics(std=std)
-        metrics_df[self._data_holder.activity_column] = metrics_df[self._data_holder.activity_column].apply(
-            lambda x: self._split_tuple(x))
-        return metrics_df
+        self.metrics = pd.DataFrame(index=self._tr_data[self._group_column].unique()) \
+            .join(self.count()) \
+            .join(self.unique_ids()) \
+            .join(self.unique_ids_num()) \
+            .join(self.aver_count_in_trace()) \
+            .join(self.loop_percent()) \
+            .join(self.throughput())
+
+        if self._dh.user_column is not None:
+            self.metrics = self.metrics \
+                .join(self.unique_users()) \
+                .join(self.unique_users_num())
+
+        self.metrics = self.metrics.join(self.calculate_time_metrics(True))
+
+        return self.metrics.sort_values('count', ascending=False)
 
     def count(self):
         """
-        Count how many was edge
+        Returns the number of occurrences of transitions in the event log.
+
+        Returns
+        -------
+        result: pandas.Series
         """
-        res = self._group_data[self._group_column].count()
-        res.index = [self._split_tuple(x) for x in res.index]
-        return res
+        return self._group_data[self._group_column].count().rename('count')
 
-    def nunique_users(self):
-        res = self._group_data[self._user_column].nunique()
-        res.index = [self._split_tuple(x) for x in res.index]
-        return res
-
-    def sum_time(self):
-        res = super().sum_time()
-        res.index = [self._split_tuple(x) for x in res.index]
-        return res
-
-    def mean_time(self):
-        res = super().mean_time()
-        res.index = [self._split_tuple(x) for x in res.index]
-        return res
-
-    def median_time(self):
-        res = super().median_time()
-        res.index = [self._split_tuple(x) for x in res.index]
-        return res
-
-    def max_time(self):
-        res = super().max_time()
-        res.index = [self._split_tuple(x) for x in res.index]
-        return res
-
-    def min_time(self):
-        res = super().min_time()
-        res.index = [self._split_tuple(x) for x in res.index]
-        return res
-
-    @staticmethod
-    def _split_tuple(x):
+    def unique_ids(self):
         """
-        Split edges and transform edge from Activity1->Activity2 to tuple(Activity1,Activity2)
-        """
-        return tuple(x.split("-->"))
+        Return list of unique IDs that have the given transition.
 
-    def cycle(self):
-        return self._cycle_metric.find()[1]
+        Returns
+        -------
+        result: pandas.Series
+        """
+        return self._group_data.agg({self._dh.id_column: set})[self._dh.id_column].rename('unique_ids')
+
+    def unique_ids_num(self):
+        """
+        Return number of unique IDs that have the given transition.
+
+        Returns
+        -------
+        result: pandas.Series
+        """
+        return self._group_data[self._dh.id_column].nunique().rename('unique_ids_num')
+
+    @round_decorator
+    def aver_count_in_trace(self):
+        """
+        Return average count of a transition in those event traces
+        where the transition occurred:
+
+         = total_count_of_transition / num_of_unique_ids_with_this_transition.
+
+        Thus, the minimum possible value is 1 (when activity occurs in ids exactly once).
+
+        Returns
+        -------
+        result: pandas.Series
+        """
+        return (self.count() / self.unique_ids_num()).rename('aver_count_in_trace')
+
+    @round_decorator
+    def loop_percent(self):
+        """
+        Return the percentage of transitions that occurred for the 2nd, 3rd, 4th,...
+        time in the event traces (percentage of 'extra use' of transitions):
+
+         = (1 - num_of_unique_ids_with_this_transition / total_count_of_transition) * 100.
+
+        Thus, this value ranges from 0 to 1 (non-including) with zero being the best value.
+
+        Returns
+        -------
+        result: pandas.Series
+
+        """
+        return ((1 - self.unique_ids_num() / self.count()) * 100).rename('loop_percent')
+
+    def unique_users(self):
+        """
+        Return set of unique users that worked on given transition.
+
+        Returns
+        -------
+        result: pandas.Series
+        """
+        return self._group_data.agg({self._dh.user_column: set})[self._dh.user_column].rename('unique_users')
+
+    def unique_users_num(self):
+        """
+        Return number of unique users that worked on given transition.
+
+        Returns
+        -------
+        result: pandas.Series
+        """
+        return self._group_data[self._dh.user_column].nunique().rename('unique_users_num')
+
+    @round_decorator
+    def throughput(self):
+        """
+        Return the average number of times the given transition is performed per time unit.
+
+        Returns
+        -------
+        result: pandas.Series
+        """
+        return (self.count() / self.total_duration()).rename('throughput')
+
+    @round_decorator
+    def success_rate(self, success_activities):
+        """
+        Return the percentage of successful ids for given transition.
+
+        Parameters
+        -----------
+        success_activities: iterable of str
+            List of activities.
+
+        Returns
+        -------
+        result: pandas.Series
+        """
+        return self.inclusion_rate(success_activities).rename('success_rate')
+
+    @round_decorator
+    def failure_rate(self, failure_activities):
+        """
+        Return the percentage of failed ids for given transition.
+
+        Parameters
+        -----------
+        failure_activities: iterable of str
+            List of activities.
+
+        Returns
+        -------
+        result: pandas.Series
+        """
+        return self.inclusion_rate(failure_activities).rename('failure_rate')

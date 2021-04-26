@@ -4,92 +4,156 @@
 
 import pandas as pd
 from ._base_metric import BaseMetric
+from ._utils import round_decorator
 
 
 class TraceMetric(BaseMetric):
     """
-    Class that contains metrics connected with traces.
+    Class for calculating metrics for event traces.
 
     Parameters
     ----------
-    data_holder : DataHolder
+    data_holder: DataHolder
         Object that contains the event log and the names of its necessary columns.
 
-    time_unit : {'s'/'second', 'm'/'minute', 'h'/'hour', 'd'/'day', 'w'/'week'}, default='day'
-        Calculate time in needed format.
+    time_unit: {'s'/'second', 'm'/'minute', 'h'/'hour', 'd'/'day', 'w'/'week'}, default='day'
+        Calculate time/duration values in given format.
 
-    cycle_length : int (default = None)
-        Parameter for CycleMetric. If cycle_length is None CycleMetric find cycles of all lengths else of needed length.
+    round: int, default=None
+        Round float values of the metrics to the given number of decimals.
+
 
     Attributes
     ----------
-    _data_holder : sberpm.DataHolder
-        Object that contains the event log and the names of its necessary columns.
-
-    _group_column : str
-        Column used for grouping the data.
-
-    _group_data: pandas.GroupBy object
-        Object that contains pandas.GroupBy data grouping by _group_column.
-
-    _user_column : str
-        Column of users in event log.
-
     metrics: pd.DataFrame
-        DataFrame contain all metrics that can be calculated
+        DataFrame that contains all calculated metrics.
     """
 
-    def __init__(self, data_holder, time_unit='day'):
-        super().__init__(data_holder, time_unit)
-        # get work data for calculate
-        grouped_data = data_holder.data.groupby(data_holder.id_column)
-        work_data = grouped_data.agg({data_holder.activity_column: tuple}).reset_index()
-        if self._user_column:
-            work_data[data_holder.user_column] = grouped_data.agg({data_holder.user_column: tuple}).values
-        work_data[data_holder.duration_column] = grouped_data[data_holder.duration_column].sum().values
+    def __init__(self, data_holder, time_unit='hour', round=None):
+        super().__init__(data_holder, time_unit, round)
 
-        # group work data
-        self._group_data = work_data.groupby(data_holder.activity_column)
+        cols_to_aggregate = [data_holder.activity_column]
+        if data_holder.user_column is not None:
+            cols_to_aggregate.append(data_holder.user_column)
+        self._grouped_data = data_holder.get_grouped_data(*cols_to_aggregate)  # id_column and traces
+
+        duration_df = data_holder.data.groupby(data_holder.id_column)[data_holder.duration_column].sum()
+        self._grouped_data = self._grouped_data.join(duration_df, on=data_holder.id_column)
+
         self._group_column = data_holder.activity_column
+        self._group_data = self._grouped_data.groupby(self._group_column)
+        self._traces = pd.DataFrame({self._dh.activity_column: self._grouped_data[self._dh.activity_column].unique()}) \
+            .set_index(self._dh.activity_column, drop=False)[self._dh.activity_column]  # pandas.Series
 
-    def apply(self, std=False):
+    def apply(self):
         """
-        Calculate all metrics:
-        total_count: total number of an event trace's occurrence in the event log
-        trace_length: length of a trace
-        unique_activities_num: number of unique activities in a trace
-        cycle_percent: percent of repeated (more than once) activities in the event trace
-        unique_users: set of unique users in a trace
-        unique_users_num: number of unique users in a trace
-        total_duration: total time duration of grouped objects
-        min_duration: min time duration of grouped objects
-        max_duration: max time duration of grouped objects
-        mean_duration: mean time duration of grouped objects
-        median_duration: median time duration of grouped objects
-        variance_duration: variance of time duration of grouped objects
-        std_duration: std of time duration of grouped objects
+        Calculate all possible metrics for this object.
+
+        Returns
+        -------
+        result: pandas.DataFrame
         """
+        self.metrics = pd.DataFrame(index=self._grouped_data[self._dh.activity_column].unique()) \
+            .join(self.count()) \
+            .join(self.ids()) \
+            .join(self.trace_length()) \
+            .join(self.unique_activities_num()) \
+            .join(self.loop_percent())
 
-        if self.metrics is None:
-            self.metrics = self._group_data.agg({self._data_holder.id_column: set}).reset_index() \
-                .rename(columns={self._data_holder.activity_column: 'trace',
-                                 self._data_holder.id_column: 'unique_ids'})
-            self.metrics['total_count'] = self.metrics['unique_ids'].apply(len).values
-            self.metrics['trace_length'] = self.metrics['trace'].apply(len)
-            self.metrics['unique_activities_num'] = self.metrics['trace'].apply(lambda x: len(set(x)))
-            self.metrics['cycle_percent'] = \
-                (1 - self.metrics['unique_activities_num'] / self.metrics['trace_length']) * 100
+        if self._dh.user_column is not None:
+            self.metrics = self.metrics \
+                .join(self.unique_users()) \
+                .join(self.unique_users_num())
 
-            if self._user_column:
-                users = self._group_data[self._data_holder.user_column].apply(lambda x: set().union(*x))
-                self.metrics["unique_users"] = users.apply(set).values
-                self.metrics["unique_users_num"] = self.metrics['unique_users'].apply(len)
-            self._calculate_time_metrics(self.metrics, self._group_data, std)
+        self.metrics = self.metrics.join(self.calculate_time_metrics(True))
 
-        return self.metrics.sort_values('total_count', ascending=False).reset_index(drop=True)
+        return self.metrics.sort_values('count', ascending=False)
 
-    def total_count(self):
+    def count(self):
         """
-        Calculate number of occurrences of a trace.
+        Return number of occurrences of the trace in the event log.
+        (=number of IDs that have the given trace).
+
+        Returns
+        -------
+        result: pandas.Series
         """
-        return self._group_data[self._data_holder.id_column].count().sort_values(ascending=False)
+        return self._group_data[self._dh.id_column].count().rename('count')  # or .nunique() - no difference
+
+    def ids(self):
+        """
+        Return list of IDs that have the given trace (=sequence of activities).
+
+        Returns
+        -------
+        result: pandas.Series
+        """
+        return self._group_data.agg({self._dh.id_column: set})[self._dh.id_column].rename('ids')
+
+    def trace_length(self):
+        """
+        Return length of the trace.
+
+        Returns
+        -------
+        result: pandas.Series
+        """
+        return self._traces.apply(len).rename('trace_length')
+
+    def unique_activities(self):
+        """
+        Return unique activities of the trace.
+
+        Returns
+        -------
+        result: pandas.Series
+        """
+        return self._traces.apply(lambda x: set(x)).rename('unique_activities')
+
+    def unique_activities_num(self):
+        """
+        Return number of unique activities of the trace.
+
+        Returns
+        -------
+        result: pandas.Series
+        """
+        return self._traces.apply(lambda x: len(set(x))).rename('unique_activities_num')
+
+    @round_decorator
+    def loop_percent(self):
+        """
+        Return the percentage of activities in the event trace that occurred
+        for the 2nd, 3rd, 4th,... time (percentage of 'extra use' of the activities):
+
+         = (1 - num_of_unique_activities / trace_length) * 100.
+
+        Thus, this value ranges from 0 to 1 (non-including).
+
+        Returns
+        -------
+        result: pandas.Series
+        """
+        return ((1 - self.unique_activities_num() / self.trace_length()) * 100).rename('loop_percent')
+
+    def unique_users(self):
+        """
+        Return set of unique users who worked on the IDs that have given event trace
+        (=sequence of activities).
+
+        Returns
+        -------
+        result: pandas.Series
+        """
+        return self._group_data[self._dh.user_column].apply(lambda x: set().union(*x)).rename('unique_users')
+
+    def unique_users_num(self):
+        """
+        Return number of unique users who worked on the IDs that have given event trace
+        (=sequence of activities).
+
+        Returns
+        -------
+        result: pandas.Series
+        """
+        return self.unique_users().apply(len).rename('unique_users_num')

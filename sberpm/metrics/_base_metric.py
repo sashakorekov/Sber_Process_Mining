@@ -3,6 +3,7 @@
 #   Link: https://github.com/pandas-dev/pandas
 
 import pandas as pd
+from ._utils import round_decorator
 
 
 class BaseMetric:
@@ -19,7 +20,7 @@ class BaseMetric:
 
     Attributes
     ----------
-    _data_holder : DataHolder
+    _dh : DataHolder
         Object that contains the event log and the names of its necessary columns.
 
     _group_column : str
@@ -28,16 +29,17 @@ class BaseMetric:
     _group_data: pandas.GroupBy object
         Object that contains pandas.GroupBy data grouping by _group_column.
 
-    _user_column : str
-        Column of users in event log.
+    _time_unit: int
+        A number time/duration metric values need to be divided by
+        so that they transform into needed time format.
 
     metrics: pd.DataFrame
         DataFrame contain all metrics that can be calculated
     """
 
-    def __init__(self, data_holder, time_unit):
+    def __init__(self, data_holder, time_unit, round):
         data_holder.check_or_calc_duration()
-        self._data_holder = data_holder
+        self._dh = data_holder
         if time_unit in ('week', 'w'):
             self._time_unit = 604800
         elif time_unit in ('day', 'd'):
@@ -49,210 +51,185 @@ class BaseMetric:
         elif time_unit in ('second', 's'):
             self._time_unit = 1
         else:
-            raise AttributeError(f'Unknown time unit: "{time_unit}"')
+            raise ValueError(f'Unknown time unit: "{time_unit}"')
+
         self.metrics = None
         self._group_column = None
         self._group_data = None
-
-        if data_holder.user_column:
-            self._user_column = data_holder.user_column
-        else:
-            self._user_column = None
+        self._round = round
 
     def apply(self):
-        """
-        Does nothing
-        """
-        pass
+        raise NotImplementedError()
 
     def calculate_time_metrics(self, std=False):
         """
-        Calculates all possible time metrics for grouped object:
-        total_duration: total time duration of grouped objects
-        min_duration: min time duration of grouped objects
-        max_duration: max time duration of grouped objects
-        mean_duration: mean time duration of grouped objects
-        median_duration: median time duration of grouped objects
-        variance_duration: variance of time duration of grouped objects
-        std_duration: std of time duration of grouped objects
+        Calculates all possible time metrics:
+            total_duration
+            mean_duration
+            median_duration
+            min_duration
+            max_duration
+
+            variance_duration
+            std_duration
+
+        Parameters
+        ----------
+        std: bool, default=False
+            If True, 'variance_duration' and 'std_duration' metrics are also calculated.
 
         Returns
         -------
-        result: pd.DataFrame
-            Key: id of an event trace, columns: names of the metrics.
+        result: pandas.DataFrame
         """
+        time_df = pd.DataFrame(index=list(self._group_data.groups.keys())) \
+            .join(self.total_duration()) \
+            .join(self.mean_duration()) \
+            .join(self.median_duration()) \
+            .join(self.max_duration()) \
+            .join(self.min_duration())
 
-        metrics_df = pd.DataFrame()
-        temp = self._sum_by(self._group_data)
-        metrics_df[self._group_column] = temp.index
-        metrics_df['total_duration'] = temp.values
-        metrics_df['min_duration'] = self._min_by(self._group_data).values
-        metrics_df['max_duration'] = self._max_by(self._group_data).values
-        metrics_df['mean_duration'] = self._mean_by(self._group_data).values
-        metrics_df['median_duration'] = self._median_by(self._group_data)
         if std:
-            metrics_df['variance_duration'] = self._variance_by(self._group_data).values
-            metrics_df['std_duration'] = self._std_by(self._group_data).values
-        return metrics_df
+            time_df = time_df \
+                .join(self.variance_duration()) \
+                .join(self.std_duration())
 
-    def _calculate_time_metrics(self, metrics_df, grouped_data, std):
+        return time_df
+
+    @round_decorator
+    def total_duration(self):
         """
-        Calculates all possible time metrics for grouped object:
-        sum_time: total time grouped object
-        mean_time: mean time grouped object
-        median_time: median time grouped object
-        max_time: max time grouped object
-        min_time: min time grouped object
-        variance_time: variance time grouped object
-        std_time: std time grouped object
-
-        Parameters
-        ----------
-        metrics_df : pd.DataFrame
-
-        grouped_data : pandas.core.groupby.GroupBy
-            Data, grouped by some column.
-
-        std: bool
+        Return total duration.
 
         Returns
         -------
-        result: pd.DataFrame
-            Key: id of an event trace, columns: names of the metrics.
+        result: pandas.Series
         """
-        metrics_df['total_duration'] = self._sum_by(grouped_data).values
-        metrics_df['min_duration'] = self._min_by(grouped_data).values
-        metrics_df['max_duration'] = self._max_by(grouped_data).values
-        metrics_df['mean_duration'] = self._mean_by(grouped_data).values
-        metrics_df['median_duration'] = self._median_by(grouped_data).values
-        if std:
-            metrics_df['variance_duration'] = self._variance_by(grouped_data).values
-            metrics_df['std_duration'] = self._std_by(grouped_data).values
+        return (self._group_data[self._dh.duration_column].sum() / self._time_unit).rename('total_duration')
 
-    def sum_time(self):
+    @round_decorator
+    def mean_duration(self):
         """
-        Calculate total time
-        """
-        return self._sum_by(self._group_data)
-
-    def mean_time(self):
-        """
-        Calculate mean time
-        """
-        return self._mean_by(self._group_data)
-
-    def median_time(self):
-        """
-        Calculate median time
-        """
-        return self._median_by(self._group_data)
-
-    def max_time(self):
-        """
-        Calculate max time
-        """
-        return self._max_by(self._group_data)
-
-    def min_time(self):
-        """
-        Calculate min time
-        """
-        return self._min_by(self._group_data)
-
-    def var_time(self):
-        """
-        Calculate variance time
-        """
-        return self._variance_by(self._group_data)
-
-    def std_time(self):
-        """
-        Calculate std time
-        """
-        return self._std_by(self._group_data)
-
-    def _sum_by(self, grouped_data):
-        """
-        Groups the data and calculates the sum of the aggregated data.
-
-        Parameters
-        ----------
-        grouped_data: pandas.core.groupby.GroupBy
-            Column used for grouping the data.
+        Return mean duration.
 
         Returns
         -------
-        result: pd.Series
-            Key: name of the column the data is grouped by, value: the metric's value.
+        result: pandas.Series
         """
-        return grouped_data[self._data_holder.duration_column].sum() / self._time_unit
+        return (self._group_data[self._dh.duration_column].mean() / self._time_unit).rename('mean_duration')
 
-    def _max_by(self, grouped_data):
+    @round_decorator
+    def median_duration(self):
         """
-        Groups the data and calculates the maximum of the aggregated data.
-
-        Parameters
-        ----------
-        grouped_data: pandas.core.groupby.GroupBy
-            Column used for grouping the data.
+        Return median duration.
 
         Returns
         -------
-        result: pd.Series
-            Key: name of the column the data is grouped by, value: the metric's value.
+        result: pandas.Series
         """
-        return grouped_data[self._data_holder.duration_column].max() / self._time_unit
+        return (self._group_data[self._dh.duration_column].median() / self._time_unit) \
+            .rename('median_duration')
 
-    def _min_by(self, grouped_data):
+    @round_decorator
+    def max_duration(self):
         """
-        Groups the data and calculates the minimum of the aggregated data.
-
-        Parameters
-        ----------
-        grouped_data: pandas.core.groupby.GroupBy
-            Column used for grouping the data.
+        Return maximum duration.
 
         Returns
         -------
-        result: pd.Series
-            Key: name of the column the data is grouped by, value: the metric's value.
+        result: pandas.Series
         """
-        return grouped_data[self._data_holder.duration_column].min() / self._time_unit
+        return (self._group_data[self._dh.duration_column].max() / self._time_unit).rename('max_duration')
 
-    def _mean_by(self, grouped_data):
+    @round_decorator
+    def min_duration(self):
         """
-        Groups the data and calculates the mean of the aggregated data.
-
-        Parameters
-        ----------
-        grouped_data: pandas.core.groupby.GroupBy
-            Column used for grouping the data.
+        Return minimum duration.
 
         Returns
         -------
-        result: pd.Series
-            Key: name of the column the data is grouped by, value: the metric's value.
+        result: pandas.Series
         """
-        return grouped_data[self._data_holder.duration_column].mean() / self._time_unit
+        return (self._group_data[self._dh.duration_column].min() / self._time_unit).rename('min_duration')
 
-    def _median_by(self, grouped_data):
+    @round_decorator
+    def variance_duration(self):
         """
-        Groups the data and calculates the median of the aggregated data.
-
-        Parameters
-        ----------
-        grouped_data: pandas.core.groupby.GroupBy
-            Column used for grouping the data.
+        Return variance of duration.
 
         Returns
         -------
-        result: pd.Series
-            Key: name of the column the data is grouped by, value: the metric's value.
+        result: pandas.Series
         """
-        return grouped_data[self._data_holder.duration_column].median() / self._time_unit
+        return (self._group_data[self._dh.duration_column].var(ddof=0) / self._time_unit) \
+            .rename('variance_duration')
 
-    def _variance_by(self, group_data):
-        return group_data[self._data_holder.duration_column].var(ddof=0) / self._time_unit
+    @round_decorator
+    def std_duration(self):
+        """
+        Return standard deviation of duration.
 
-    def _std_by(self, group_data):
-        return group_data[self._data_holder.duration_column].std(ddof=0) / self._time_unit
+        Returns
+        -------
+        result: pandas.Series
+        """
+        return (self._group_data[self._dh.duration_column].std(ddof=0) / self._time_unit) \
+            .rename('std_duration')
+
+    def inclusion_rate(self, selected_activities):
+        """
+        Return the percentage of ids, containing selected activities for given object.
+
+        Parameters
+        -----------
+        selected_activities: iterable of str
+            List of activities.
+
+        Returns
+        -------
+        result: pandas.Series
+        """
+        gd_id = self._dh.get_grouped_data(self._dh.activity_column)
+        id_selected = gd_id[self._dh.activity_column].apply(lambda x: any([s in x for s in selected_activities]))
+        selected_ids = set(gd_id[id_selected][self._dh.id_column])
+
+        return (self.unique_ids().apply(lambda x: len(x.intersection(selected_ids))) /
+                self.unique_ids_num()).rename('inclusion_rate')
+
+    def calc_metrics(self, *metric_names, raise_no_method=True):
+        """
+        Calculates the given metrics.
+        All the metrics must have the same name as the existing methods od the class.
+        If at least one metric does not exist, an error will be raised.
+
+        Parameters
+        ----------
+        metric_names: iterable of str
+            Metric names.
+
+        raise_no_method: bool, default=True
+            It true, raise an error if it is impossible to calculate
+            at least one of the metrics. Skip 'impossible' metrics otherwise.
+
+        Returns
+        -------
+        result: pandas.DataFrame
+        """
+        methods = []
+        for name in metric_names:
+            method = getattr(self, name, None)
+            if method is not None and callable(method):
+                methods.append(method)
+            else:
+                if raise_no_method:
+                    raise AttributeError(f"Object '{self.__class__.__name__}' does not have '{name}' method.")
+
+        if len(methods) == 0:
+            if raise_no_method:
+                raise AttributeError(f"Object '{self.__class__.__name__}' does not have {metric_names} methods.")
+            else:
+                return pd.DataFrame()
+
+        result = pd.concat([m() for m in methods], axis=1, join='inner')
+
+        return result

@@ -152,7 +152,6 @@ class ProcessTreeNode:
                     if ch.type == self.type:
                         new_children += ch.children
                         again = True
-                        print(1)
                     else:
                         new_children.append(ch)
                 self.children = new_children
